@@ -2,6 +2,24 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   
   <url>
+    <loc>https://blog.zeora.top/fcircle/</loc>
+    
+    <lastmod>2026-07-18</lastmod>
+    
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  
+  <url>
+    <loc>https://blog.zeora.top/friend.json</loc>
+    
+    <lastmod>2026-07-18</lastmod>
+    
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  
+  <url>
     <loc>https://blog.zeora.top/links/</loc>
     
     <lastmod>2026-07-18</lastmod>
@@ -265,13 +283,6 @@
   </url>
   
   <url>
-    <loc>https://blog.zeora.top/tags/Windows/</loc>
-    <lastmod>2026-07-18</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.2</priority>
-  </url>
-  
-  <url>
     <loc>https://blog.zeora.top/tags/Android/</loc>
     <lastmod>2026-07-18</lastmod>
     <changefreq>weekly</changefreq>
@@ -279,7 +290,7 @@
   </url>
   
   <url>
-    <loc>https://blog.zeora.top/tags/%E6%94%AF%E4%BB%98%E5%AE%9D/</loc>
+    <loc>https://blog.zeora.top/tags/Windows/</loc>
     <lastmod>2026-07-18</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.2</priority>
@@ -308,6 +319,13 @@
   
   <url>
     <loc>https://blog.zeora.top/tags/%E6%96%87%E5%8C%96/</loc>
+    <lastmod>2026-07-18</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.2</priority>
+  </url>
+  
+  <url>
+    <loc>https://blog.zeora.top/tags/%E6%94%AF%E4%BB%98%E5%AE%9D/</loc>
     <lastmod>2026-07-18</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.2</priority>
