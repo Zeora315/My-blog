@@ -6120,6 +6120,113 @@ span.tags-punctuation i {
   color: #fff;
   font-weight: 600;
 }
+.contrib-wall.is-mobile {
+  --contrib-cell: 10px;
+  --contrib-gap: 3px;
+  --contrib-day-label: 26px;
+  display: block;
+  gap: 0;
+}
+.contrib-wall.is-mobile .contrib-wall-main {
+  width: 100%;
+}
+.contrib-wall.is-mobile .contrib-wall-header {
+  margin-bottom: 8px;
+  min-height: 24px;
+}
+.contrib-wall.is-mobile .contrib-wall-header .contrib-wall-title {
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+.contrib-wall.is-mobile .contrib-calendar-card {
+  width: 100%;
+  padding: 12px;
+  overflow: hidden;
+}
+.contrib-wall.is-mobile .contrib-calendar-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  padding-bottom: 6px;
+}
+.contrib-wall.is-mobile .contrib-calendar {
+  min-width: calc(var(--contrib-day-label) + (var(--contrib-weeks, 53) * var(--contrib-cell)) + ((var(--contrib-weeks, 53) - 1) * var(--contrib-gap)));
+}
+.contrib-wall.is-mobile .contrib-months,
+.contrib-wall.is-mobile .contrib-days {
+  font-size: 11px;
+}
+.contrib-wall.is-mobile .contrib-wall-footer {
+  -webkit-box-align: start;
+  -moz-box-align: start;
+  -o-box-align: start;
+  -ms-flex-align: start;
+  -webkit-align-items: flex-start;
+  align-items: flex-start;
+  -webkit-box-orient: vertical;
+  -moz-box-orient: vertical;
+  -o-box-orient: vertical;
+  -webkit-flex-direction: column;
+  -ms-flex-direction: column;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.contrib-wall.is-mobile .contrib-wall-note {
+  font-size: 11px;
+  line-height: 1.4;
+}
+.contrib-wall.is-mobile .contrib-wall-legend {
+  -webkit-box-pack: start;
+  -moz-box-pack: start;
+  -o-box-pack: start;
+  -ms-flex-pack: start;
+  -webkit-justify-content: flex-start;
+  justify-content: flex-start;
+}
+.contrib-wall.is-mobile .contrib-wall-legend .contrib-legend-text {
+  font-size: 11px;
+}
+.contrib-wall.is-mobile .contrib-year-tabs {
+  width: 100%;
+  display: -webkit-box;
+  display: -moz-box;
+  display: -webkit-flex;
+  display: -ms-flexbox;
+  display: box;
+  display: flex;
+  -webkit-box-flex: 1;
+  -moz-box-flex: 1;
+  -o-box-flex: 1;
+  box-flex: 1;
+  -webkit-flex: 0 0 auto;
+  -ms-flex: 0 0 auto;
+  flex: 0 0 auto;
+  -webkit-box-orient: horizontal;
+  -moz-box-orient: horizontal;
+  -o-box-orient: horizontal;
+  -webkit-flex-direction: row;
+  -ms-flex-direction: row;
+  flex-direction: row;
+  gap: 6px;
+  padding-top: 10px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.contrib-wall.is-mobile .contrib-year-tabs::-webkit-scrollbar {
+  display: none;
+}
+.contrib-wall.is-mobile .contrib-year-tab {
+  width: auto;
+  min-width: 58px;
+  min-height: 32px;
+  padding: 7px 12px;
+  text-align: center;
+  white-space: nowrap;
+}
 @media (prefers-color-scheme: dark) {
   .contrib-wall {
     --contrib-level-0: #161b22;
