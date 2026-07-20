@@ -38,30 +38,11 @@ const sidebarFn = () => {
   const $toggleMenu = document.getElementById("toggle-menu");
   const $mobileSidebarMenus = document.getElementById("sidebar-menus");
   const $menuMask = document.getElementById("menu-mask");
-  const $body = document.body;
   const $html = document.documentElement;
-  let lockedScrollY = 0;
-
-  const lockBodyScroll = () => {
-    lockedScrollY = window.scrollY || document.documentElement.scrollTop || 0;
-    $body.style.overflow = "hidden";
-    $html.style.overflow = "hidden";
-    requestAnimationFrame(() => window.scrollTo(0, lockedScrollY));
-  };
-
-  const unlockBodyScroll = () => {
-    $body.style.overflow = "";
-    $html.style.overflow = "";
-    window.scrollTo(0, lockedScrollY);
-  };
 
   const toggleMobileSidebar = (isOpen) => {
-    if (isOpen && !$mobileSidebarMenus.classList.contains("open")) {
-      lockBodyScroll();
-    } else if (!isOpen && $mobileSidebarMenus.classList.contains("open")) {
-      unlockBodyScroll();
-    }
     Solitude[isOpen ? "fadeIn" : "fadeOut"]($menuMask, 0.5);
+    $html.classList.toggle("mobile-sidebar-open", isOpen);
     $mobileSidebarMenus.classList.toggle("open", isOpen);
   };
 
