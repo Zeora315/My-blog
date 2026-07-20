@@ -39,9 +39,28 @@ const sidebarFn = () => {
   const $mobileSidebarMenus = document.getElementById("sidebar-menus");
   const $menuMask = document.getElementById("menu-mask");
   const $body = document.body;
+  const $html = document.documentElement;
+  let lockedScrollY = 0;
+
+  const lockBodyScroll = () => {
+    lockedScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    $body.style.overflow = "hidden";
+    $html.style.overflow = "hidden";
+    requestAnimationFrame(() => window.scrollTo(0, lockedScrollY));
+  };
+
+  const unlockBodyScroll = () => {
+    $body.style.overflow = "";
+    $html.style.overflow = "";
+    window.scrollTo(0, lockedScrollY);
+  };
 
   const toggleMobileSidebar = (isOpen) => {
-    $body.style.overflow = isOpen ? "hidden" : "";
+    if (isOpen && !$mobileSidebarMenus.classList.contains("open")) {
+      lockBodyScroll();
+    } else if (!isOpen && $mobileSidebarMenus.classList.contains("open")) {
+      unlockBodyScroll();
+    }
     Solitude[isOpen ? "fadeIn" : "fadeOut"]($menuMask, 0.5);
     $mobileSidebarMenus.classList.toggle("open", isOpen);
   };
@@ -56,6 +75,13 @@ const sidebarFn = () => {
 
   lifecycle.listen($toggleMenu, "click", () => toggleMobileSidebar(true));
   lifecycle.listen($menuMask, "click", closeMobileSidebar);
+  lifecycle.listen(document, "pointerdown", (event) => {
+    if (!$mobileSidebarMenus.classList.contains("open")) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    if ($mobileSidebarMenus.contains(target) || $toggleMenu.contains(target)) return;
+    closeMobileSidebar();
+  });
 
   let resizeFrame;
   lifecycle.listen(window, "resize", () => {

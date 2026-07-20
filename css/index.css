@@ -10097,6 +10097,9 @@ div#banners .bannerText {
   .needEndHide {
     display: none !important;
   }
+  #nav-music.needEndHide {
+    display: flex !important;
+  }
 }
 #post .post-copyright {
   background: var(--efu-secondbg);
