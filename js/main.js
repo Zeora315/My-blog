@@ -80,6 +80,64 @@ const sidebarFn = () => {
   lifecycle.add(() => cancelAnimationFrame(resizeFrame));
 };
 
+const mobileAsideFn = () => {
+  const $toggle = document.querySelector(".rs_show .mobile.sidebar");
+  const $menus = document.getElementById("mobile-aside-menus");
+  const $mask = document.getElementById("mobile-aside-mask");
+
+  if (!$toggle || !$menus || !$mask) {
+    $toggle && ($toggle.style.display = "none");
+    return;
+  }
+
+  const closeMobileAside = () => {
+    if ($menus.classList.contains("open")) {
+      Solitude.fadeOut($mask, 0.5);
+      document.documentElement.classList.remove("mobile-aside-open");
+      $menus.classList.remove("open");
+      $toggle.classList.remove("on");
+      $toggle.setAttribute("aria-expanded", "false");
+    }
+  };
+
+  lifecycle.listen($mask, "click", closeMobileAside);
+  lifecycle.listen(document, "pointerdown", (event) => {
+    if (!$menus.classList.contains("open")) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    if ($menus.contains(target) || $toggle.contains(target)) return;
+    closeMobileAside();
+  });
+
+  let resizeFrame;
+  lifecycle.listen(window, "resize", () => {
+    if (resizeFrame) return;
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = null;
+      if (
+        Solitude.isHidden($toggle) &&
+        $menus.classList.contains("open")
+      ) {
+        closeMobileAside();
+      }
+    });
+  });
+  lifecycle.add(() => cancelAnimationFrame(resizeFrame));
+};
+
+Solitude.toggleMobileAside = () => {
+  const $menus = document.getElementById("mobile-aside-menus");
+  const $mask = document.getElementById("mobile-aside-mask");
+  const $toggle = document.querySelector(".rs_show .mobile.sidebar");
+  if (!$menus || !$mask) return;
+  const isOpen = $menus.classList.contains("open");
+  Solitude[isOpen ? "fadeOut" : "fadeIn"]($mask, 0.5);
+  document.documentElement.classList.toggle("mobile-aside-open", !isOpen);
+  $menus.classList.toggle("open", !isOpen);
+  $toggle?.classList.toggle("on", !isOpen);
+  $toggle?.setAttribute("aria-expanded", String(!isOpen));
+};
+
 const scrollFn = () => {
   const $rightside = document.getElementById("rightside");
   const $header = document.getElementById("page-header");
@@ -838,12 +896,13 @@ const actions = {
   },
   changeWittyWord() {
     const greetings = Solitude.config.aside.witty_words || [];
+    const greetingElements = document.querySelectorAll(".sayhi");
+    if (!greetingElements.length) return;
     if (greetings.length === 0) {
-      document.getElementById("sayhi").textContent = "Solitude";
+      greetingElements.forEach((item) => { item.textContent = "Solitude"; });
       this.lastWittyWord = null;
       return;
     }
-    const greetingElement = document.getElementById("sayhi");
     let randomGreeting;
     if (greetings.length === 1) {
       randomGreeting = greetings[0];
@@ -852,7 +911,7 @@ const actions = {
         randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
       } while (randomGreeting === this.lastWittyWord);
     }
-    greetingElement.textContent = randomGreeting;
+    greetingElements.forEach((item) => { item.textContent = randomGreeting; });
     this.lastWittyWord = randomGreeting;
   },
   switchDarkMode() {
@@ -964,12 +1023,23 @@ const actions = {
     });
   },
   addRuntime() {
-    const el = document.getElementById("runtimeshow");
-    if (el && Solitude.config.runtime) {
+    if (!Solitude.config.runtime) return;
+    document.querySelectorAll("[data-runtime-show], #runtimeshow").forEach((el) => {
       el.innerText =
         Solitude.timeDiff(new Date(Solitude.config.runtime), new Date()) +
         Solitude.config.lang.day;
-    }
+    });
+  },
+  syncDuplicateAsideStats() {
+    document.querySelectorAll("[data-busuanzi-copy]").forEach((target) => {
+      const source = document.getElementById(target.dataset.busuanziCopy);
+      if (!source) return;
+      const sync = () => { target.innerHTML = source.innerHTML; };
+      sync();
+      const observer = new MutationObserver(sync);
+      observer.observe(source, { childList: true, subtree: true, characterData: true });
+      lifecycle.add(() => observer.disconnect());
+    });
   },
   toTalk(txt) {
     const inputs = [
@@ -1029,8 +1099,8 @@ const actions = {
       300
     ),
   setTimeState() {
-    const el = document.getElementById("sayhi");
-    if (el) {
+    const greetingElements = document.querySelectorAll(".sayhi");
+    if (greetingElements.length) {
       const hours = new Date().getHours();
       const lang = Solitude.config.aside.state;
 
@@ -1071,7 +1141,7 @@ const actions = {
       const greeting = greetings.find(
         (g) => hours >= g.start && hours <= g.end
       );
-      el.innerText = greeting.text;
+      greetingElements.forEach((el) => { el.innerText = greeting.text; });
     }
   },
   tagPageActive() {
@@ -1137,7 +1207,7 @@ const actions = {
     document
       .querySelectorAll(".card-allinfo .card-tag-cloud")
       .forEach((tagCloudElement) => tagCloudElement.classList.add("all-tags"));
-    document.getElementById("more-tags-btn")?.remove();
+    document.querySelectorAll(".more-tags-btn, #more-tags-btn").forEach((item) => item.remove());
   },
   listenToPageInputPress() {
     const toGroup = document.querySelector(".toPageGroup");
@@ -1648,9 +1718,11 @@ Solitude.refresh = async () => {
   document.body.setAttribute("data-type", page);
   Solitude.changeTimeFormat(document.querySelectorAll(timeSelector));
   runtime && Solitude.addRuntime();
+  Solitude.syncDuplicateAsideStats();
   [
     scrollFn,
     sidebarFn,
+    mobileAsideFn,
     initTooltip,
     () => Solitude.addPhotoFigcaption(),
     () => Solitude.setTimeState(),
