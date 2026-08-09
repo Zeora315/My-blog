@@ -351,9 +351,18 @@ const initHomeCenter = () => {
   const banner = container.querySelector(".home-center-banner");
   const titleLink = container.querySelector(".home-center-title-link");
   const titleTag = container.querySelector(".home-center-title-tag span");
+  const mobilePrevButton = container.querySelector(".home-center-mobile-arrow-prev");
+  const mobileNextButton = container.querySelector(".home-center-mobile-arrow-next");
   const categoryBar = document.getElementById("category-bar");
+  const prefersReducedMotion = window.matchMedia?.(
+    "(prefers-reduced-motion: reduce)"
+  );
+  const autoplayDelay = Number(container.dataset.autoplayDelay) || 6000;
   let activeIndex = 0;
   let scrollFrame;
+  let scrollSnapTimer;
+  let autoplayTimer;
+  let autoplayRestartTimer;
 
   const getCachedColor = (src) => {
     try {
@@ -477,6 +486,14 @@ const initHomeCenter = () => {
     }
   };
 
+  const scrollBannerTo = (index, behavior = "smooth") => {
+    if (window.innerWidth > 768 || !banner?.clientWidth) return;
+    banner.scrollTo({
+      left: banner.clientWidth * index,
+      behavior,
+    });
+  };
+
   const select = (index) => {
     if (!banners[index]) return;
     activeIndex = index;
@@ -491,9 +508,11 @@ const initHomeCenter = () => {
       item.classList.toggle("active", isActive);
       item.setAttribute("aria-current", String(isActive));
     });
-    indicators.forEach((indicator, indicatorIndex) =>
-      indicator.classList.toggle("active", indicatorIndex === index)
-    );
+    indicators.forEach((indicator, indicatorIndex) => {
+      const isActive = indicatorIndex === index;
+      indicator.classList.toggle("active", isActive);
+      indicator.setAttribute("aria-current", String(isActive));
+    });
     const selected = banners[index];
     const selectedStyle = getComputedStyle(selected);
     const color = selectedStyle.getPropertyValue("--home-center-theme").trim();
@@ -503,18 +522,59 @@ const initHomeCenter = () => {
     const colorDeep = selectedStyle
       .getPropertyValue("--home-center-theme-op-deep")
       .trim();
-    titleLink.textContent = selected.dataset.title;
-    titleLink.href = selected.dataset.link;
-    titleTag.textContent = selected.dataset.label;
+    if (titleLink) {
+      titleLink.textContent = selected.dataset.title;
+      titleLink.href = selected.dataset.link;
+    }
+    if (titleTag) titleTag.textContent = selected.dataset.label;
     container.style.setProperty("--current-theme", color);
     container.style.setProperty("--current-theme-op", colorOp);
     container.style.setProperty("--current-theme-op-deep", colorDeep);
     categoryBar?.style.setProperty("--current-banner-theme", color);
   };
 
+  const goTo = (index, options = {}) => {
+    if (!banners.length) return;
+    const nextIndex = (index + banners.length) % banners.length;
+    select(nextIndex);
+    if (options.syncScroll !== false) {
+      scrollBannerTo(nextIndex, options.behavior || "smooth");
+    }
+  };
+
+  const stopAutoplay = () => {
+    clearInterval(autoplayTimer);
+    clearTimeout(autoplayRestartTimer);
+    autoplayTimer = 0;
+    autoplayRestartTimer = 0;
+  };
+
+  const queueAutoplay = () => {
+    clearTimeout(autoplayRestartTimer);
+    if (banners.length <= 1 || prefersReducedMotion?.matches) return;
+    autoplayRestartTimer = setTimeout(() => {
+      if (!container.isConnected) return;
+      stopAutoplay();
+      autoplayTimer = setInterval(() => {
+        if (!container.isConnected) {
+          stopAutoplay();
+          return;
+        }
+        if (document.hidden) return;
+        goTo(activeIndex + 1);
+      }, autoplayDelay);
+    }, 1200);
+  };
+
   items.forEach((item, index) => {
-    item.addEventListener("mouseenter", () => select(index));
-    item.addEventListener("focusin", () => select(index));
+    item.addEventListener("mouseenter", () => {
+      goTo(index, { syncScroll: false });
+      stopAutoplay();
+    });
+    item.addEventListener("focusin", () => {
+      goTo(index, { syncScroll: false });
+      stopAutoplay();
+    });
   });
   banners.forEach((item, index) => {
     let pointerType = "";
@@ -526,7 +586,8 @@ const initHomeCenter = () => {
     item.addEventListener("click", (event) => {
       if (pointerType === "touch" && window.innerWidth <= 768) {
         event.preventDefault();
-        select(index);
+        goTo(index);
+        queueAutoplay();
       } else {
         navigate(item.dataset.link, event);
       }
@@ -542,18 +603,47 @@ const initHomeCenter = () => {
   indicators.forEach((indicator, index) => {
     indicator.addEventListener("click", (event) => {
       event.preventDefault();
-      select(index);
-      banner.scrollTo({ left: banner.clientWidth * index, behavior: "smooth" });
+      goTo(index);
+      queueAutoplay();
     });
   });
+  mobilePrevButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    goTo(activeIndex - 1);
+    queueAutoplay();
+  });
+  mobileNextButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    goTo(activeIndex + 1);
+    queueAutoplay();
+  });
+  container.addEventListener("mouseenter", stopAutoplay);
+  container.addEventListener("mouseleave", queueAutoplay);
+  container.addEventListener("focusin", stopAutoplay);
+  container.addEventListener("focusout", queueAutoplay);
+  banner.addEventListener("touchstart", stopAutoplay, { passive: true });
+  banner.addEventListener("touchend", queueAutoplay, { passive: true });
   banner.addEventListener("scroll", () => {
     cancelAnimationFrame(scrollFrame);
+    clearTimeout(scrollSnapTimer);
     scrollFrame = requestAnimationFrame(() => {
       if (window.innerWidth > 768 || !banner.clientWidth) return;
-      select(Math.round(banner.scrollLeft / banner.clientWidth));
+      const nextIndex = Math.min(
+        banners.length - 1,
+        Math.max(0, Math.round(banner.scrollLeft / banner.clientWidth))
+      );
+      select(nextIndex);
     });
+    scrollSnapTimer = setTimeout(() => {
+      if (window.innerWidth > 768 || !banner.clientWidth) return;
+      const targetLeft = banner.clientWidth * activeIndex;
+      if (Math.abs(banner.scrollLeft - targetLeft) > 2) {
+        scrollBannerTo(activeIndex);
+      }
+    }, 140);
   });
   select(0);
+  queueAutoplay();
   banners.forEach((item, index) => {
     if (item.dataset.color) return;
     const image = item.querySelector(".home-center-cover-img");
