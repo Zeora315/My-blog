@@ -13,6 +13,7 @@
 
   const state = {
     observer: null,
+    observerQueued: false,
     pending: false,
     typingTimer: null,
     aiDrafts: new WeakMap(),
@@ -87,6 +88,15 @@
     return stripAiMarker(value)
       .replace(/[\s\u00a0`~!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?，。！？、；：“”‘’（）【】《》…—]/g, "")
       .toLowerCase();
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
   function lcsLength(source, target) {
@@ -243,6 +253,7 @@
   };
 
   function createButton() {
+    const config = getConfig();
     const button = document.createElement("button");
     button.type = "button";
     button.className = "tk-submit-action-icon solitude-ai-action solitude-ai-comment";
@@ -251,7 +262,7 @@
     button.innerHTML = `
       <span class="solitude-ai-action-icon" aria-hidden="true">${icons.comment}</span>
       <span class="solitude-ai-action-orb" aria-hidden="true"></span>
-      <span class="solitude-ai-action-label">AI评论</span>
+      <span class="solitude-ai-action-label">${escapeHtml(config.button_text || "AI生成")}</span>
       <span class="solitude-ai-action-status" aria-hidden="true"></span>
     `;
     button.addEventListener("click", () => requestAiComment(button));
@@ -323,6 +334,23 @@
     button.style.setProperty("--solitude-send-progress", `${Math.round(clamped * 100)}%`);
   }
 
+  function attachSubmitProgress(entry) {
+    const nextButton = getSubmitButton(entry.submit) || entry.button;
+    if (!nextButton) return null;
+
+    if (nextButton !== entry.button) {
+      entry.button.classList.remove("solitude-submit-loading", "solitude-submit-complete");
+      entry.button.style.removeProperty("--solitude-send-progress");
+      state.submitProgress.delete(entry.button);
+      entry.button = nextButton;
+      state.submitProgress.set(nextButton, entry);
+    }
+
+    entry.button.classList.add("solitude-submit-loading");
+    if (entry.submit) entry.submit.classList.add("solitude-submit-loading-wrap");
+    return entry.button;
+  }
+
   function finishSubmitProgress(button, complete) {
     const entry = state.submitProgress.get(button);
     if (!entry || entry.finishing) return;
@@ -330,6 +358,8 @@
     entry.finishing = true;
     cancelAnimationFrame(entry.raf);
     clearInterval(entry.monitor);
+
+    button = attachSubmitProgress(entry) || button;
 
     if (complete) {
       setSubmitProgress(button, 1);
@@ -359,18 +389,19 @@
       startedAt,
       sawBusy: false,
       finishing: false,
+      progress: 0,
       raf: 0,
       monitor: 0
     };
 
     state.submitProgress.set(button, entry);
-    button.classList.add("solitude-submit-loading");
-    if (submit) submit.classList.add("solitude-submit-loading-wrap");
+    attachSubmitProgress(entry);
 
     const draw = () => {
       const elapsed = performance.now() - startedAt;
-      const progress = Math.min(.96, elapsed / SEND_PROGRESS_DURATION);
-      setSubmitProgress(button, progress);
+      entry.progress = Math.min(.96, elapsed / SEND_PROGRESS_DURATION);
+      const activeButton = attachSubmitProgress(entry);
+      if (activeButton) setSubmitProgress(activeButton, entry.progress);
       entry.raf = requestAnimationFrame(draw);
     };
 
@@ -378,14 +409,13 @@
 
     entry.monitor = window.setInterval(() => {
       const elapsed = performance.now() - startedAt;
-      const isBusy = isSubmitButtonBusy(button);
+      const activeButton = attachSubmitProgress(entry) || entry.button;
+      const isBusy = isSubmitButtonBusy(activeButton);
       const isCleared = !stripAiMarker(textarea.value).trim();
 
       if (isBusy) entry.sawBusy = true;
       if ((entry.sawBusy && !isBusy) || isCleared || elapsed > SEND_PROGRESS_TIMEOUT) {
-        finishSubmitProgress(button, true);
-      } else if (!entry.sawBusy && elapsed > 1600) {
-        finishSubmitProgress(button, false);
+        finishSubmitProgress(activeButton, true);
       }
     }, 180);
   }
@@ -452,7 +482,8 @@
   }
 
   function renderAiBadges() {
-    document.querySelectorAll("#twikoo .tk-content").forEach(content => {
+    document.querySelectorAll("#twikoo .tk-content:not([data-solitude-ai-badge-checked])").forEach(content => {
+      content.dataset.solitudeAiBadgeChecked = "true";
       const commentMain = content.parentElement;
       if (!commentMain) return;
 
@@ -482,6 +513,15 @@
     renderAiBadges();
   }
 
+  function scheduleMountButton() {
+    if (state.observerQueued) return;
+    state.observerQueued = true;
+    requestAnimationFrame(() => {
+      state.observerQueued = false;
+      mountButton();
+    });
+  }
+
   function init() {
     const config = getConfig();
     if (!config.enable) return;
@@ -489,7 +529,7 @@
     mountButton();
 
     if (state.observer) state.observer.disconnect();
-    state.observer = new MutationObserver(mountButton);
+    state.observer = new MutationObserver(scheduleMountButton);
     state.observer.observe(document.getElementById("twikoo-wrap") || document.body, {
       childList: true,
       subtree: true
@@ -500,4 +540,5 @@
 
   document.addEventListener("DOMContentLoaded", init);
   document.addEventListener("pjax:complete", init);
+  if (document.readyState !== "loading") init();
 })();

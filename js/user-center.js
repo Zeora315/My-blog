@@ -20,6 +20,7 @@
 
   const state = {
     currentUser: null,
+    publicUser: null,
     credentials: null,
     users: [],
     authMode: 'login',
@@ -35,6 +36,7 @@
   const els = {
     authView: $('#authView'),
     centerView: $('#centerView'),
+    publicView: $('#publicView'),
     authSwitchText: $('#authSwitchText'),
     authSwitchBtn: $('#authSwitchBtn'),
     authEmailForm: $('#authEmailForm'),
@@ -51,6 +53,15 @@
     actionGrid: $('.uc-action-grid'),
     adminCard: $('#adminCard'),
     logoutBtn: $('#logoutBtn'),
+    publicHero: $('#publicHero'),
+    publicAvatar: $('#publicAvatar'),
+    publicName: $('#publicName'),
+    publicRole: $('#publicRole'),
+    publicUid: $('#publicUid'),
+    publicJoined: $('#publicJoined'),
+    publicBio: $('#publicBio'),
+    publicLevelCard: $('#publicLevelCard'),
+    publicLinks: $('#publicLinks'),
     modalRoot: $('#modalRoot'),
     toast: $('#toast'),
   };
@@ -64,6 +75,24 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  function normalizeBadgeColor(value) {
+    const color = String(value || '').trim();
+    return /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : '';
+  }
+
+  function applyRoleBadge(element, user) {
+    if (!element) return;
+    const badge = user?.badgeLabel || (user?.role === 'admin' ? '博主' : '');
+    const color = normalizeBadgeColor(user?.badgeColor);
+    element.textContent = badge;
+    element.classList.toggle('is-hidden', !badge);
+    if (color) {
+      element.style.setProperty('--uc-badge-color', color);
+    } else {
+      element.style.removeProperty('--uc-badge-color');
+    }
   }
 
   function initials(user) {
@@ -97,6 +126,100 @@
 
   function formData(form) {
     return Object.fromEntries(new FormData(form).entries());
+  }
+
+  function profileHandleFromLocation() {
+    const url = new URL(window.location.href);
+    const query = url.searchParams.get('user') || url.searchParams.get('u') || url.searchParams.get('handle');
+    if (query) return query.replace(/^@/, '').trim();
+    const match = url.pathname.match(/\/user-center\/([^/]+)\/?$/);
+    return match ? decodeURIComponent(match[1]).replace(/^@/, '').trim() : '';
+  }
+
+  function levelFromExperience(experienceValue) {
+    const experience = Math.max(0, Math.floor(Number(experienceValue) || 0));
+    let level = 1;
+    let spent = 0;
+    while (experience >= spent + level && level < 99) {
+      spent += level;
+      level += 1;
+    }
+    const progress = Math.max(0, experience - spent);
+    return {
+      experience,
+      level,
+      label: `Lv.${level}`,
+      nextLevel: level + 1,
+      progress,
+      nextRequired: level,
+      toNext: Math.max(0, level - progress),
+    };
+  }
+
+  function levelMeta(user) {
+    const computed = levelFromExperience(user?.commentExperience || user?.commentCount || 0);
+    return {
+      ...computed,
+      level: Number(user?.commentLevel || computed.level),
+      label: user?.commentLevelLabel || computed.label,
+      nextLevel: Number(user?.commentNextLevel || computed.nextLevel),
+      progress: Number(user?.commentProgress ?? computed.progress),
+      nextRequired: Number(user?.commentNextRequired || computed.nextRequired),
+      toNext: Number(user?.commentToNext ?? computed.toNext),
+    };
+  }
+
+  function socialLinks(user) {
+    return Array.isArray(user?.socialLinks)
+      ? user.socialLinks
+        .map((item) => ({
+          label: String(item?.label || item?.name || '').trim(),
+          url: String(item?.url || item?.href || item?.link || '').trim(),
+        }))
+        .filter((item) => item.label && item.url)
+      : [];
+  }
+
+  function socialLinksToText(user) {
+    return socialLinks(user).map((item) => `${item.label} ${item.url}`).join('\n');
+  }
+
+  function parseSocialLinksText(value) {
+    return String(value || '')
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split(/\s+/);
+        const url = parts.pop() || '';
+        return { label: parts.join(' ').trim(), url };
+      })
+      .filter((item) => item.label && item.url);
+  }
+
+  function renderLevelCard(user) {
+    const meta = levelMeta(user);
+    const percent = Math.max(0, Math.min(100, (meta.progress / Math.max(1, meta.nextRequired)) * 100));
+    return `
+      <div class="uc-level-summary">
+        <strong>${escapeHtml(meta.label)}</strong>
+        <span>经验 ${escapeHtml(meta.experience)}</span>
+      </div>
+      <div class="uc-level-progress"><i style="width:${percent}%"></i></div>
+      <p>距离 Lv.${escapeHtml(meta.nextLevel)} 还需 ${escapeHtml(meta.toNext)} 点经验。</p>
+    `;
+  }
+
+  function renderSocialLinks(user) {
+    const links = socialLinks(user);
+    const website = user?.websiteUrl ? [{ label: '个人网站', url: user.websiteUrl }] : [];
+    const allLinks = [...website, ...links];
+    if (!allLinks.length) return '<p class="uc-empty">这个用户还没有公开主页链接。</p>';
+    return allLinks.map((item) => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.label)}</a>`).join('');
+  }
+
+  function cssImageUrl(value) {
+    return `url("${String(value || '').replace(/["\\\n\r]/g, (char) => encodeURIComponent(char))}")`;
   }
 
   function findEmailInValue(value) {
@@ -177,10 +300,13 @@
     els.authRegisterForm.elements.password.focus();
   }
 
-  function buildApiUrl(action) {
+  function buildApiUrl(action, params = {}) {
     const base = config.apiUrl || '/api/demo';
     const url = new URL(base, window.location.origin);
     url.searchParams.set('action', action);
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
+    });
     return url.toString();
   }
 
@@ -204,7 +330,7 @@
 
     let response;
     try {
-      response = await fetch(buildApiUrl(action), fetchOptions);
+      response = await fetch(buildApiUrl(action, options.params), fetchOptions);
     } catch (error) {
       throw new Error('无法连接用户中心后端，请检查 Twikoo 部署或跨域配置。');
     }
@@ -238,19 +364,52 @@
     if (!user) {
       els.authView.classList.remove('is-hidden');
       els.centerView.classList.add('is-hidden');
+      els.publicView?.classList.add('is-hidden');
       closeModal();
       return;
     }
 
     els.authView.classList.add('is-hidden');
     els.centerView.classList.remove('is-hidden');
+    els.publicView?.classList.add('is-hidden');
     setAvatar(els.profileAvatar, user);
+    if (els.centerView) {
+      if (user.backgroundUrl) {
+        els.centerView.style.setProperty('--uc-profile-cover', cssImageUrl(user.backgroundUrl));
+        els.centerView.classList.add('has-profile-cover');
+      } else {
+        els.centerView.style.removeProperty('--uc-profile-cover');
+        els.centerView.classList.remove('has-profile-cover');
+      }
+    }
     els.profileName.textContent = user.displayName;
     els.profileUid.textContent = `UID: ${user.uid || user.id.slice(0, 5)}`;
     els.profileJoined.textContent = `加入于 ${formatDate(user.createdAt)}`;
     els.profileEmail.textContent = user.email;
-    els.roleBadge.classList.toggle('is-hidden', user.role !== 'admin');
+    applyRoleBadge(els.roleBadge, user);
     els.adminCard.classList.toggle('is-hidden', user.role !== 'admin');
+  }
+
+  function updatePublicProfile(user) {
+    state.publicUser = user;
+    els.authView.classList.add('is-hidden');
+    els.centerView.classList.add('is-hidden');
+    els.publicView.classList.remove('is-hidden');
+    setAvatar(els.publicAvatar, user);
+    if (user.backgroundUrl) {
+      els.publicHero.style.setProperty('--uc-profile-cover', cssImageUrl(user.backgroundUrl));
+      els.publicHero.classList.add('has-profile-cover');
+    } else {
+      els.publicHero.style.removeProperty('--uc-profile-cover');
+      els.publicHero.classList.remove('has-profile-cover');
+    }
+    els.publicName.textContent = user.displayName || user.username || '用户资料';
+    applyRoleBadge(els.publicRole, user);
+    els.publicUid.textContent = `UID: ${user.uid || String(user.id || '').slice(0, 5)}`;
+    els.publicJoined.textContent = `加入于 ${formatDate(user.createdAt)}`;
+    els.publicBio.textContent = user.bio || '这个用户还没有写简介。';
+    els.publicLevelCard.innerHTML = renderLevelCard(user);
+    els.publicLinks.innerHTML = renderSocialLinks(user);
   }
 
   async function refreshHealth() {
@@ -294,6 +453,7 @@
       edit: renderEditModal,
       password: renderPasswordModal,
       notice: renderNoticeModal,
+      level: renderLevelModal,
       admin: renderAdminModal,
     };
     renderers[name]?.();
@@ -314,6 +474,22 @@
             <input id="avatarUrlInput" name="avatarUrl" value="${escapeHtml(user.avatarUrl || '')}" placeholder="https://example.com/avatar.png" />
           </label>
           <label class="uc-field">
+            <span>主页背景图</span>
+            <input name="backgroundUrl" value="${escapeHtml(user.backgroundUrl || '')}" placeholder="https://example.com/cover.jpg" />
+          </label>
+          <label class="uc-field">
+            <span>个人网站</span>
+            <input name="websiteUrl" value="${escapeHtml(user.websiteUrl || '')}" placeholder="https://example.com" />
+          </label>
+          <label class="uc-field">
+            <span>个人简介</span>
+            <input name="bio" maxlength="120" value="${escapeHtml(user.bio || '')}" placeholder="一句话介绍自己" />
+          </label>
+          <label class="uc-field uc-field-wide">
+            <span>社交链接</span>
+            <textarea name="socialLinksText" rows="4" placeholder="B站 https://space.bilibili.com/...\nTwitter https://x.com/...\n抖音 https://www.douyin.com/...">${escapeHtml(socialLinksToText(user))}</textarea>
+          </label>
+          <label class="uc-field">
             <span>邮箱</span>
             <input value="${escapeHtml(user.email)}" disabled />
           </label>
@@ -331,6 +507,14 @@
     input.addEventListener('input', () => {
       setAvatar(preview, { ...user, avatarUrl: input.value.trim() });
     }, { signal });
+  }
+
+  function renderLevelModal() {
+    openModal('等级详情', `
+      <div class="uc-level-modal">
+        ${renderLevelCard(state.currentUser)}
+      </div>
+    `);
   }
 
   function renderPasswordModal() {
@@ -462,7 +646,13 @@
                 </div>
               </td>
               <td>UID: ${escapeHtml(user.uid)}<br />${escapeHtml(user.email)}</td>
-              <td><span class="uc-status-pill ${user.role === 'admin' ? 'is-admin' : 'is-user'}">${user.role === 'admin' ? '管理员' : '无标签'}</span></td>
+              <td>
+                <div class="uc-tag-editor">
+                  <input data-badge-input="${escapeHtml(user.id)}" maxlength="20" value="${escapeHtml(user.badgeLabel || "")}" placeholder="例如：博主" />
+                  <input data-badge-color="${escapeHtml(user.id)}" type="color" value="${escapeHtml(normalizeBadgeColor(user.badgeColor) || "#ff5f63")}" />
+                  <button type="button" data-save-badge="${escapeHtml(user.id)}">保存</button>
+                </div>
+              </td>
               <td><span class="uc-status-pill ${user.status === 'blocked' ? 'is-blocked' : 'is-active'}">${user.status === 'blocked' ? '停用' : '可用'}</span></td>
               <td>
                 <div class="uc-row-actions">
@@ -554,7 +744,8 @@
     const roleButton = event.target.closest('[data-toggle-role]');
     const statusButton = event.target.closest('[data-toggle-status]');
     const deleteButton = event.target.closest('[data-delete]');
-    const userId = roleButton?.dataset.toggleRole || statusButton?.dataset.toggleStatus || deleteButton?.dataset.delete;
+    const badgeButton = event.target.closest('[data-save-badge]');
+    const userId = roleButton?.dataset.toggleRole || statusButton?.dataset.toggleStatus || deleteButton?.dataset.delete || badgeButton?.dataset.saveBadge;
     if (!userId) return;
 
     const user = state.users.find((item) => item.id === userId);
@@ -564,6 +755,12 @@
       if (roleButton) {
         await updateAdminUser(user, { role: user.role === 'admin' ? 'user' : 'admin' });
         showToast('用户身份已更新。');
+      }
+      if (badgeButton) {
+        const labelInput = root.querySelector('[data-badge-input="' + CSS.escape(user.id) + '"]');
+        const colorInput = root.querySelector('[data-badge-color="' + CSS.escape(user.id) + '"]');
+        await updateAdminUser(user, { badgeLabel: labelInput?.value.trim() || '', badgeColor: colorInput?.value || '' });
+        showToast('身份标签已保存。');
       }
       if (statusButton) {
         await updateAdminUser(user, { status: user.status === 'blocked' ? 'active' : 'blocked' });
@@ -585,7 +782,16 @@
     submitter.disabled = true;
     try {
       if (event.target.id === 'editProfileForm') {
-        const body = { ...state.credentials, ...formData(event.target) };
+        const data = formData(event.target);
+        const body = {
+          ...state.credentials,
+          displayName: data.displayName,
+          avatarUrl: data.avatarUrl,
+          backgroundUrl: data.backgroundUrl,
+          websiteUrl: data.websiteUrl,
+          bio: data.bio,
+          socialLinks: parseSocialLinksText(data.socialLinksText),
+        };
         const payload = await api('updateProfile', { method: 'POST', body });
         state.currentUser = payload.user;
         updateShell();
@@ -630,6 +836,19 @@
 
   (async function boot() {
     await refreshHealth();
+    const publicHandle = profileHandleFromLocation();
+    if (publicHandle) {
+      try {
+        const payload = await api('profile', { params: { handle: publicHandle } });
+        updatePublicProfile(payload.user);
+      } catch (error) {
+        els.authView.classList.add('is-hidden');
+        els.centerView.classList.add('is-hidden');
+        els.publicView.classList.remove('is-hidden');
+        els.publicView.innerHTML = `<section class="uc-auth-card"><h1 class="uc-site-name">找不到这个用户</h1><p class="uc-empty">${escapeHtml(error.message)}</p></section>`;
+      }
+      return;
+    }
     els.authEmailInput.value = detectTwikooEmail();
     setAuthMode('login');
     updateShell();
