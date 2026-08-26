@@ -6,6 +6,32 @@
     siteName: "Zeora Blog"
   };
   const SESSION_KEY = "zeoraTwikooUserSession";
+  const CENTER_SESSION_TOKEN_KEY = "twikooUserCenterSessionToken";
+  const CENTER_SESSION_USER_KEY = "twikooUserCenterSessionUser";
+  const ANONYMOUS_EMAIL = "anonymous@zeora.local";
+  const ANONYMOUS_NAMES = [
+    "优雅的火龙果",
+    "路过的星尘",
+    "清醒的汽水",
+    "安静的月光",
+    "慢热的云朵",
+    "会发光的句号"
+  ];
+  const DEFAULT_SHOP_ITEMS = [
+    { key: "quark", name: "夸克网盘会员", description: "兑换后按填写手机号发放会员权益。", price: 100, stock: 10, enabled: true },
+    { key: "bilibili", name: "B站大会员", description: "兑换后按填写手机号发放会员权益。", price: 100, stock: 10, enabled: true },
+    { key: "tencent", name: "腾讯视频会员", description: "兑换后按填写手机号发放会员权益。", price: 100, stock: 10, enabled: true },
+    { key: "netease", name: "网易云音乐会员", description: "兑换后按填写手机号发放会员权益。", price: 100, stock: 10, enabled: true }
+  ];
+  const SOCIAL_LIMIT = 5;
+  const SOCIAL_PRESETS = [
+    { label: "个人主页", url: "https://", tone: "website", platform: "" },
+    { label: "个人博客", url: "https://", tone: "website", platform: "" },
+    { label: "Bilibili", url: "https://space.bilibili.com/", tone: "bilibili", platform: "bilibili" },
+    { label: "GitHub", url: "https://github.com/", tone: "github", platform: "github" },
+    { label: "抖音", url: "https://www.douyin.com/user/", tone: "douyin", platform: "douyin" },
+    { label: "Twitter", url: "https://x.com/", tone: "twitter", platform: "twitter" }
+  ];
 
   window.__zeoraCommentAuthCleanup?.();
 
@@ -16,25 +42,35 @@
     user: null,
     email: "",
     manualMode: false,
-    observer: null,
-    layoutObserver: null,
+    anonymousMode: false,
+    anonymousName: "",
     mounted: false,
     eventsBound: false,
     mutationQueued: false,
+    retryTimer: null,
+    retryCount: 0,
     profileCache: new Map(),
     profileIndex: new Map(),
     profileIndexPromise: null,
     authMode: "login",
     authStep: "email",
+    authIdentifier: "",
     authEmail: "",
     rememberSession: true,
     captcha: { enabled: false, provider: "" },
     users: [],
+    shopItems: [],
+    aiConfig: null,
+    aiConfigs: [],
+    aiEditConfig: null,
+    aiEditingNew: false,
+    redemptions: [],
     notifications: [],
     unread: 0,
+    adminPanel: "notice",
     filter: { query: "", role: "all", status: "all" },
     submitEl: null,
-    reply: { placeholder: null, slot: null, target: null }
+    replyContext: null
   };
 
   let geetestLoaderPromise = null;
@@ -43,10 +79,8 @@
 
   window.__zeoraCommentAuthCleanup = () => {
     controller.abort();
-    state.observer?.disconnect();
-    state.observer = null;
-    state.layoutObserver?.disconnect();
-    state.layoutObserver = null;
+    clearTimeout(state.retryTimer);
+    state.retryTimer = null;
   };
   document.addEventListener("solitude:beforeNavigate", window.__zeoraCommentAuthCleanup, { once: true, signal });
 
@@ -89,23 +123,60 @@
     const storage = state.rememberSession ? localStorage : sessionStorage;
     localStorage.removeItem(SESSION_KEY);
     sessionStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(CENTER_SESSION_TOKEN_KEY);
+    localStorage.removeItem(CENTER_SESSION_USER_KEY);
+    sessionStorage.removeItem(CENTER_SESSION_TOKEN_KEY);
+    sessionStorage.removeItem(CENTER_SESSION_USER_KEY);
     storage.setItem(SESSION_KEY, JSON.stringify({
       sessionToken: payload.sessionToken,
       user: payload.user,
       savedAt: Date.now()
     }));
+    storage.setItem(CENTER_SESSION_TOKEN_KEY, payload.sessionToken || "");
+    storage.setItem(CENTER_SESSION_USER_KEY, JSON.stringify(payload.user || null));
   }
 
   function clearSession() {
     localStorage.removeItem(SESSION_KEY);
     sessionStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(CENTER_SESSION_TOKEN_KEY);
+    localStorage.removeItem(CENTER_SESSION_USER_KEY);
+    sessionStorage.removeItem(CENTER_SESSION_TOKEN_KEY);
+    sessionStorage.removeItem(CENTER_SESSION_USER_KEY);
     state.token = "";
     state.user = null;
     state.manualMode = false;
+    state.anonymousMode = false;
+    state.anonymousName = "";
+    state.replyContext = null;
   }
 
   function isManualMode() {
     return state.manualMode;
+  }
+
+  function anonymousConfig() {
+    const fallback = { avatarUrl: "/img/default_avatar.avif", names: ANONYMOUS_NAMES };
+    const configured = window.SOLITUDE_COMMENT_AUTH?.anonymous || {};
+    const names = Array.isArray(configured.names) && configured.names.length
+      ? configured.names.map((item) => String(item || "").trim()).filter(Boolean)
+      : fallback.names;
+    return {
+      avatarUrl: configured.avatarUrl || fallback.avatarUrl,
+      names: names.length ? names : fallback.names
+    };
+  }
+
+  function pickAnonymousName(current = "") {
+    const names = anonymousConfig().names;
+    if (names.length <= 1) return names[0] || ANONYMOUS_NAMES[0];
+    let next = current;
+    let guard = 0;
+    while (next === current && guard < 8) {
+      next = names[Math.floor(Math.random() * names.length)];
+      guard += 1;
+    }
+    return next || names[0] || ANONYMOUS_NAMES[0];
   }
 
   function buildApiUrl(action) {
@@ -330,22 +401,41 @@
   }
 
   function setInputValue(input, value) {
-    if (!input || !value) return;
-    if (input.value === value) return;
+    if (!input) return;
+    const nextValue = String(value ?? "");
+    if (input.value === nextValue) return;
     const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-    nativeSetter?.call(input, value);
+    nativeSetter?.call(input, nextValue);
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function syncTwikooProfile() {
-    const user = state.user;
-    if (!user) return;
-
+  function twikooProfileInputs() {
     const nick = document.querySelector("#twikoo input[name='nick'], #twikoo input[placeholder*='昵称'], #twikoo input[placeholder*='Nick']");
     const mail = document.querySelector("#twikoo input[name='mail'], #twikoo input[type='email'], #twikoo input[placeholder*='邮箱'], #twikoo input[placeholder*='Mail']");
     const link = document.querySelector("#twikoo input[name='link'], #twikoo input[placeholder*='网站'], #twikoo input[placeholder*='链接'], #twikoo input[placeholder*='http']");
+    return { nick, mail, link };
+  }
 
+  function clearTwikooProfileInputs() {
+    const { nick, mail, link } = twikooProfileInputs();
+    setInputValue(nick, "");
+    setInputValue(mail, "");
+    setInputValue(link, "");
+  }
+
+  function syncTwikooProfile() {
+    const { nick, mail, link } = twikooProfileInputs();
+    if (state.anonymousMode && !state.user) {
+      if (!state.anonymousName) state.anonymousName = pickAnonymousName();
+      setInputValue(nick, state.anonymousName);
+      setInputValue(mail, ANONYMOUS_EMAIL);
+      setInputValue(link, "");
+      return;
+    }
+
+    const user = state.user;
+    if (!user) return;
     setInputValue(nick, user.displayName || user.username || makeNameFromEmail(user.email));
     setInputValue(mail, user.email);
     setInputValue(link, publicProfileUrl(user));
@@ -372,13 +462,13 @@
     if (!post) return;
 
     const manual = isManualMode() && !state.user;
-    const replyActive = Boolean(state.reply.slot?.isConnected);
+    const anonymous = state.anonymousMode && !state.user;
     const submit = getTwikooSubmit();
-    post.classList.toggle("zca-auth-required", !state.user && !manual);
+    post.classList.toggle("zca-auth-required", !state.user && !manual && !anonymous);
     post.classList.toggle("zca-auth-granted", Boolean(state.user) && !manual);
     post.classList.toggle("zca-manual-comment", manual);
-    post.classList.toggle("zca-reply-active", replyActive);
-    if (submit) submit.style.display = !state.user && !manual && !replyActive ? "none" : "";
+    post.classList.toggle("zca-anonymous-comment", anonymous);
+    if (submit) submit.style.removeProperty("display");
   }
 
   function removeManualSwitchButton() {
@@ -387,14 +477,11 @@
 
   function getTwikooSubmit() {
     if (state.submitEl?.isConnected) return state.submitEl;
-    const submit = document.querySelector("#twikoo > .tk-submit") || document.querySelector("#twikoo .tk-submit");
+    const submit = document.querySelector("#twikoo > .tk-submit")
+      || Array.from(document.querySelectorAll("#twikoo .tk-submit")).find((item) => !item.closest(".tk-comment, .tk-replies"));
     if (submit) {
       submit.classList.add("zca-primary-submit");
       state.submitEl = submit;
-      if (!state.reply.placeholder?.isConnected && submit.parentNode) {
-        state.reply.placeholder = document.createComment("zeora-comment-submit-home");
-        submit.parentNode.insertBefore(state.reply.placeholder, submit);
-      }
     }
     return submit;
   }
@@ -407,62 +494,16 @@
     removeManualSwitchButton();
   }
 
-  function syncCommentActionOverlay() {
-    const submit = getTwikooSubmit();
-    const textarea = submit?.querySelector(".el-textarea__inner");
-    const actionGroup = submit?.querySelector(".tk-row-actions-start");
-    if (!submit || !textarea || !actionGroup) return;
-
-    const submitRect = submit.getBoundingClientRect();
-    const textareaRect = textarea.getBoundingClientRect();
-    const actionHeight = actionGroup.offsetHeight || actionGroup.getBoundingClientRect().height || 32;
-    if (!submitRect.width || !textareaRect.width) return;
-
-    actionGroup.style.setProperty("--zca-actions-top", `${Math.max(8, textareaRect.bottom - submitRect.top - actionHeight - 10)}px`);
-    actionGroup.style.setProperty("--zca-actions-left", `${Math.max(10, textareaRect.left - submitRect.left + 12)}px`);
-    actionGroup.style.setProperty("--zca-actions-max-width", `${Math.max(160, textareaRect.width - 24)}px`);
-
-    const meta = submit.querySelector(".tk-meta-input");
-    const profileBar = submit.querySelector(".zeora-comment-auth.is-authorized");
-    const anchor = meta && getComputedStyle(meta).display !== "none" ? meta : profileBar;
-    const primary = submit.querySelector(".el-button--primary");
-    if (anchor && primary) {
-      const anchorRect = anchor.getBoundingClientRect();
-      const primaryHeight = primary.getBoundingClientRect().height || 34;
-      const top = anchorRect.top - submitRect.top + Math.max(0, (anchorRect.height - primaryHeight) / 2);
-      primary.style.setProperty("transition", "background .18s ease, color .18s ease, border-color .18s ease, box-shadow .18s ease", "important");
-      primary.style.setProperty("--zca-submit-top", `${Math.max(0, top)}px`);
-    }
-  }
-
-  function observeCommentLayout() {
-    const submit = getTwikooSubmit();
-    const textarea = submit?.querySelector(".el-textarea__inner");
-    if (!submit || !textarea || typeof ResizeObserver === "undefined") return;
-
-    state.layoutObserver?.disconnect();
-    state.layoutObserver = new ResizeObserver(() => {
-      requestAnimationFrame(syncCommentActionOverlay);
-    });
-    state.layoutObserver.observe(submit);
-    state.layoutObserver.observe(textarea);
-    const meta = submit.querySelector(".tk-meta-input");
-    const profileBar = submit.querySelector(".zeora-comment-auth.is-authorized");
-    if (meta) state.layoutObserver.observe(meta);
-    if (profileBar) state.layoutObserver.observe(profileBar);
-  }
-
   function placeAuthBar(bar) {
     const submit = getTwikooSubmit();
     if (!submit) return false;
 
-    const actionRow = getTwikooActionRow();
-    if (actionRow) {
-      if (actionRow.nextElementSibling !== bar) actionRow.insertAdjacentElement("afterend", bar);
-      return true;
-    }
+    const parent = submit.parentElement;
+    if (!parent) return false;
 
-    if (bar.parentElement !== submit || submit.lastElementChild !== bar) submit.appendChild(bar);
+    if (bar.parentElement !== parent || submit.nextElementSibling !== bar) {
+      submit.insertAdjacentElement("afterend", bar);
+    }
     return true;
   }
 
@@ -481,11 +522,6 @@
   }
 
   function placeGateBar(bar) {
-    if (state.reply.slot?.isConnected) {
-      if (state.reply.slot.firstElementChild !== bar) state.reply.slot.insertBefore(bar, state.reply.slot.firstElementChild);
-      return true;
-    }
-
     const wrap = getCommentWrap();
     if (!wrap) return false;
 
@@ -501,82 +537,6 @@
 
   function directChildByClass(parent, className) {
     return Array.from(parent?.children || []).find((child) => child.classList?.contains(className)) || null;
-  }
-
-  function setReplyActive(active) {
-    const post = getPostComment();
-    if (post) post.classList.toggle("zca-reply-active", Boolean(active));
-  }
-
-  function replyControlFromEventTarget(target) {
-    const control = target.closest?.("#twikoo button, #twikoo a");
-    if (!control || control.closest(".tk-submit")) return null;
-    const label = `${control.textContent || ""} ${control.getAttribute("aria-label") || ""} ${control.title || ""}`.trim();
-    return /回复/.test(label) ? control : null;
-  }
-
-  function ensureReplySlot(comment) {
-    let slot = directChildByClass(comment, "zca-reply-composer");
-    if (!slot) {
-      slot = document.createElement("div");
-      slot.className = "zca-reply-composer";
-      const replies = directChildByClass(comment, "tk-replies");
-      if (replies) comment.insertBefore(slot, replies);
-      else comment.appendChild(slot);
-    }
-    return slot;
-  }
-
-  function moveComposerToComment(comment) {
-    const submit = getTwikooSubmit();
-    if (!comment || !submit) return;
-
-    const previous = state.reply.target;
-    if (previous && previous !== comment) previous.classList.remove("zca-reply-target");
-
-    const slot = ensureReplySlot(comment);
-    if (state.reply.slot && state.reply.slot !== slot) state.reply.slot.remove();
-    if (submit.parentElement !== slot) slot.appendChild(submit);
-    comment.classList.add("zca-reply-target");
-    state.reply.slot = slot;
-    state.reply.target = comment;
-    setReplyActive(true);
-    applyCommentMode();
-    renderBar();
-    syncTwikooProfile();
-    requestAnimationFrame(() => {
-      syncCommentActionOverlay();
-      observeCommentLayout();
-      submit.querySelector(".el-textarea__inner")?.focus?.({ preventScroll: true });
-    });
-  }
-
-  function scheduleMoveComposerToComment(comment) {
-    requestAnimationFrame(() => {
-      moveComposerToComment(comment);
-      setTimeout(() => moveComposerToComment(comment), 60);
-    });
-  }
-
-  function restoreReplyComposer() {
-    const submit = getTwikooSubmit();
-    const placeholder = state.reply.placeholder;
-    if (submit && placeholder?.parentNode) {
-      placeholder.parentNode.insertBefore(submit, placeholder.nextSibling);
-    } else if (submit) {
-      document.querySelector("#twikoo")?.insertBefore(submit, document.querySelector("#twikoo .tk-comments") || null);
-    }
-    state.reply.target?.classList.remove("zca-reply-target");
-    state.reply.slot?.remove();
-    state.reply.slot = null;
-    state.reply.target = null;
-    setReplyActive(false);
-    applyCommentMode();
-    renderBar();
-    requestAnimationFrame(() => {
-      syncCommentActionOverlay();
-      observeCommentLayout();
-    });
   }
 
   function ensureModalRoot() {
@@ -610,17 +570,47 @@
 
   function setManualMode() {
     state.manualMode = true;
+    state.anonymousMode = false;
+    state.anonymousName = "";
+    state.replyContext = null;
     state.user = null;
     state.token = "";
     localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(CENTER_SESSION_TOKEN_KEY);
+    localStorage.removeItem(CENTER_SESSION_USER_KEY);
+    sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(CENTER_SESSION_TOKEN_KEY);
+    sessionStorage.removeItem(CENTER_SESSION_USER_KEY);
     closeModal();
     applyCommentMode();
     renderBar();
+    requestAnimationFrame(clearTwikooProfileInputs);
     notify("已切换为手动填写评论信息。");
+  }
+
+  function setAnonymousMode(name = "") {
+    state.manualMode = false;
+    state.anonymousMode = true;
+    state.anonymousName = name || pickAnonymousName(state.anonymousName);
+    state.replyContext = null;
+    state.user = null;
+    state.token = "";
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(CENTER_SESSION_TOKEN_KEY);
+    localStorage.removeItem(CENTER_SESSION_USER_KEY);
+    sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(CENTER_SESSION_TOKEN_KEY);
+    sessionStorage.removeItem(CENTER_SESSION_USER_KEY);
+    closeModal();
+    applyCommentMode();
+    renderBar();
+    syncTwikooProfile();
+    notify("已切换为匿名评论。");
   }
 
   function resetToGate(message = "已返回评论登录。") {
     clearSession();
+    state.replyContext = null;
     removeManualSwitchButton();
     closeModal();
     renderBar();
@@ -656,11 +646,11 @@
     const { siteName } = config();
     const mode = ["login", "register", "reset"].includes(state.authMode) ? state.authMode : "login";
     const step = state.authStep || "email";
-    const showEmail = step === "email";
-    const showPassword = mode === "login" && step === "password";
+    const showLogin = mode === "login";
+    const showEmail = mode !== "login" && step === "email";
     const showRegister = mode === "register" && step === "code";
     const showReset = mode === "reset" && step === "code";
-    const title = mode === "register" ? "注册评论账号" : mode === "reset" ? "重置评论密码" : "登录评论账号";
+    const title = mode === "register" ? "注册评论账号" : mode === "reset" ? "重置评论密码" : "登录";
     const lead = mode === "register"
       ? "设置昵称和头像外链，之后评论区会直接使用这份云端资料。"
       : mode === "reset"
@@ -675,34 +665,33 @@
           <p>${escapeHtml(lead)}</p>
         </header>
 
-        <div class="zca-mode-tabs" role="tablist" aria-label="账号操作">
-          <button type="button" data-zca-auth-mode="login" class="${mode === "login" ? "is-active" : ""}">登录</button>
-          <button type="button" data-zca-auth-mode="register" class="${mode === "register" ? "is-active" : ""}">注册</button>
-          <button type="button" data-zca-auth-mode="reset" class="${mode === "reset" ? "is-active" : ""}">忘记密码</button>
-        </div>
-
-        ${state.captcha?.enabled ? `<div class="zca-security-pill">${escapeHtml(state.captcha.provider || "人机验证")} 已启用</div>` : ""}
+        <form class="zca-login-form ${showLogin ? "" : "is-hidden"}" data-zca-login-form>
+          <label>
+            <span>邮箱、用户名或 UID</span>
+            <input name="identifier" type="text" required autocomplete="username" placeholder="请按邮箱、用户名或 UID 登录" value="${escapeHtml(state.authIdentifier)}" />
+          </label>
+          <label>
+            <span>密码</span>
+            <input name="password" type="password" required autocomplete="current-password" placeholder="请输入密码" />
+          </label>
+          <label class="zca-remember-row">
+            <input name="rememberMe" type="checkbox" ${state.rememberSession ? "checked" : ""} />
+            <span>记住我，下次自动登录</span>
+          </label>
+          <button class="zca-primary-btn" type="submit">登录</button>
+          <p class="zca-auth-links">
+            <button type="button" data-zca-auth-options>其他方式</button>
+          </p>
+        </form>
 
         <form class="zca-login-form ${showEmail ? "" : "is-hidden"}" data-zca-login-email-form>
           <label>
             <span>邮箱</span>
             <input name="email" type="email" required autocomplete="email" placeholder="name@example.com" value="${escapeHtml(state.authEmail)}" />
           </label>
-          <label class="zca-remember-row">
-            <input name="rememberMe" type="checkbox" ${state.rememberSession ? "checked" : ""} />
-            <span>记住我，下次自动登录</span>
-          </label>
-          <button class="zca-primary-btn" type="submit">下一步</button>
-        </form>
-
-        <form class="zca-login-form ${showPassword ? "" : "is-hidden"}" data-zca-login-password-form>
-          <label>
-            <span>密码</span>
-            <input name="password" type="password" required autocomplete="current-password" />
-          </label>
           <div class="zca-form-actions">
-            <button class="zca-primary-btn" type="submit">登录</button>
-            <button class="zca-quiet-btn" type="button" data-zca-back-email>上一步</button>
+            <button class="zca-primary-btn" type="submit">发送验证码</button>
+            <button class="zca-quiet-btn" type="button" data-zca-auth-mode="login">返回登录</button>
           </div>
         </form>
 
@@ -729,7 +718,7 @@
           </label>
           <div class="zca-form-actions">
             <button class="zca-primary-btn" type="submit">注册并登录</button>
-            <button class="zca-quiet-btn" type="button" data-zca-back-email>上一步</button>
+            <button class="zca-quiet-btn" type="button" data-zca-auth-mode="login">返回登录</button>
           </div>
         </form>
 
@@ -744,7 +733,7 @@
           </label>
           <div class="zca-form-actions">
             <button class="zca-primary-btn" type="submit">重置并登录</button>
-            <button class="zca-quiet-btn" type="button" data-zca-back-email>上一步</button>
+            <button class="zca-quiet-btn" type="button" data-zca-auth-mode="login">返回登录</button>
           </div>
         </form>
 
@@ -769,9 +758,32 @@
         </div>
         <h2 id="zcaManualWarningTitle">你的评论信息容易被冒充</h2>
         <p>使用传统免登录评论时，只要别人知道你的昵称和邮箱，就可能冒用你的身份发表评论。</p>
-        <p>使用账号登录后评论，可以保护头像、昵称和评论记录，也方便之后管理自己的评论。</p>
-        <button class="zca-warning-primary" type="button" data-zca-login>使用账号登录后评论</button>
+        <p>登录后评论，可以保护头像、昵称和评论记录，也方便之后管理自己的评论。</p>
+        <button class="zca-warning-primary" type="button" data-zca-login>登录发表评论</button>
         <button class="zca-manual-continue" type="button" data-zca-confirm-manual>继续使用传统方式评论</button>
+      </div>
+    `;
+    root.classList.remove("is-hidden");
+    root.querySelector("[data-zca-login]")?.focus();
+  }
+
+  function renderAnonymousWarningModal() {
+    const root = ensureModalRoot();
+    root.innerHTML = `
+      <div class="zca-modal-card zca-manual-warning zca-anonymous-warning" role="dialog" aria-modal="true" aria-labelledby="zcaAnonymousWarningTitle">
+        <button class="zca-close" type="button" data-zca-close aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg></button>
+        <div class="zca-warning-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <circle cx="12" cy="12" r="8.2" />
+            <path d="M12 7.2v6" />
+            <path d="M12 16.8h.01" />
+          </svg>
+        </div>
+        <h2 id="zcaAnonymousWarningTitle">无法收到任何回复</h2>
+        <p>使用匿名评论功能评论，任何人包括博主都无法针对你的评论进行回复，也无法把这条评论关联到你的账号。</p>
+        <p>因为匿名性更高，匿名评论会进入更严格的内容审查流程。</p>
+        <button class="zca-warning-primary" type="button" data-zca-login>登录发表评论</button>
+        <button class="zca-manual-continue" type="button" data-zca-confirm-anonymous>继续使用匿名方式评论</button>
       </div>
     `;
     root.classList.remove("is-hidden");
@@ -807,27 +819,107 @@
       ? user.socialLinks
         .map((item) => ({
           label: String(item?.label || item?.name || "").trim(),
-          url: String(item?.url || item?.href || item?.link || "").trim()
+          url: String(item?.url || item?.href || item?.link || "").trim(),
+          platform: String(item?.platform || "").trim()
         }))
         .filter((item) => item.label && item.url)
       : [];
   }
 
-  function socialLinksToText(user) {
-    return socialLinks(user).map((item) => `${item.label} ${item.url}`).join("\n");
+  function socialPresetForLabel(label, platform) {
+    const normalized = String(label || "").trim().toLowerCase();
+    const byPlatform = SOCIAL_PRESETS.find((preset) => preset.platform && platform && preset.platform === String(platform).toLowerCase());
+    return byPlatform ||
+      SOCIAL_PRESETS.find((preset) => preset.label.toLowerCase() === normalized) ||
+      SOCIAL_PRESETS.find((preset) => preset.tone === normalized) ||
+      SOCIAL_PRESETS.find((preset) => preset.tone === "website");
   }
 
-  function parseSocialLinksText(value) {
-    return String(value || "")
-      .split(/\n+/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const parts = line.split(/\s+/);
-        const url = parts.pop() || "";
-        return { label: parts.join(" ").trim(), url };
-      })
+  function socialEditorItemHtml(item, index, total) {
+    const preset = socialPresetForLabel(item.label, item.platform);
+    const label = item.label || preset.label || "链接";
+    return `
+      <article class="zca-social-item is-${escapeHtml(preset.tone || "website")}" data-zca-social-index="${index}">
+        <div class="zca-social-item-head">
+          <span class="zca-social-platform">
+            <i aria-hidden="true"></i>
+            <strong data-zca-social-name="${index}">${escapeHtml(label)}</strong>
+          </span>
+          <div class="zca-social-tools">
+            <button type="button" data-zca-social-move="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""} aria-label="上移">↑</button>
+            <button type="button" data-zca-social-move="${index}" data-direction="1" ${index === total - 1 ? "disabled" : ""} aria-label="下移">↓</button>
+            <button type="button" data-zca-social-delete="${index}" aria-label="删除">⌫</button>
+          </div>
+        </div>
+        <input class="zca-social-url" data-zca-social-url="${index}" value="${escapeHtml(item.url || "")}" placeholder="${escapeHtml(preset.url || "https://example.com")}" />
+      </article>
+    `;
+  }
+
+  function mountZcaSocialEditor(user) {
+    const editor = document.querySelector("[data-zca-social-editor]");
+    if (!editor) return;
+    let links = socialLinks(user).slice(0, SOCIAL_LIMIT);
+    const list = editor.querySelector("[data-zca-social-list]");
+    const count = editor.querySelector("[data-zca-social-count]");
+    const addButton = editor.querySelector("[data-zca-social-add-toggle]");
+
+    const render = () => {
+      list.innerHTML = links.length
+        ? links.map((item, index) => socialEditorItemHtml(item, index, links.length)).join("")
+        : `<p class="zca-empty">还没有社交链接。</p>`;
+      count.textContent = `${links.length} / ${SOCIAL_LIMIT}`;
+      addButton.disabled = links.length >= SOCIAL_LIMIT;
+      editor.classList.toggle("is-full", links.length >= SOCIAL_LIMIT);
+    };
+
+    editor.collectLinks = () => links
+      .map((item) => ({
+        label: String(item.label || "").trim(),
+        url: String(item.url || "").trim(),
+        platform: String(item.platform || "").trim()
+      }))
       .filter((item) => item.label && item.url);
+
+    editor.addEventListener("input", (event) => {
+      const urlIndex = event.target.dataset.zcaSocialUrl;
+      if (urlIndex !== undefined) links[Number(urlIndex)].url = event.target.value;
+    }, { signal });
+
+    editor.addEventListener("click", (event) => {
+      const add = event.target.closest("[data-zca-social-add]");
+      const move = event.target.closest("[data-zca-social-move]");
+      const remove = event.target.closest("[data-zca-social-delete]");
+
+      if (add && links.length < SOCIAL_LIMIT) {
+        const preset = SOCIAL_PRESETS.find((item) => item.label === add.dataset.zcaSocialAdd) || SOCIAL_PRESETS[0];
+        links.push({ label: preset.label, url: "", platform: preset.platform || "" });
+        render();
+        list.querySelector(`[data-zca-social-url="${links.length - 1}"]`)?.focus();
+        return;
+      }
+
+      if (move) {
+        const from = Number(move.dataset.zcaSocialMove);
+        const to = from + Number(move.dataset.direction);
+        if (to >= 0 && to < links.length) {
+          [links[from], links[to]] = [links[to], links[from]];
+          render();
+        }
+        return;
+      }
+
+      if (remove) {
+        links.splice(Number(remove.dataset.zcaSocialDelete), 1);
+        render();
+      }
+    }, { signal });
+
+    render();
+  }
+
+  function collectZcaSocialLinks(form) {
+    return form.querySelector("[data-zca-social-editor]")?.collectLinks?.() || [];
   }
 
   function levelFromExperience(experienceValue) {
@@ -866,6 +958,47 @@
     };
   }
 
+  function pointsMeta(user, meta = levelMeta(user)) {
+    const earned = Number.isFinite(Number(user?.commentPointsEarned))
+      ? Math.max(0, Math.floor(Number(user.commentPointsEarned)))
+      : Math.floor(meta.level / 10);
+    const spent = Math.max(0, Math.floor(Number(user?.shopSpentPoints) || 0));
+    const available = Number.isFinite(Number(user?.commentPoints))
+      ? Math.max(0, Math.floor(Number(user.commentPoints)))
+      : Math.max(0, earned - spent);
+    return { earned, spent, available };
+  }
+
+  function shopItems(includeDisabled = false) {
+    return (state.shopItems.length ? state.shopItems : DEFAULT_SHOP_ITEMS)
+      .filter((item) => item && (includeDisabled || item.enabled !== false))
+      .map((item) => ({
+        key: String(item.key || "").trim(),
+        name: String(item.name || item.label || "").trim(),
+        description: String(item.description || item.content || "").trim(),
+        price: Math.max(1, Math.floor(Number(item.price || item.cost || 100) || 100)),
+        stock: Math.max(0, Math.floor(Number(item.stock) || 0)),
+        imageUrl: String(item.imageUrl || item.coverUrl || item.previewUrl || "").trim(),
+        enabled: item.enabled !== false
+      }))
+      .filter((item) => item.key && item.name);
+  }
+
+  function shopImageHtml(item, className = "zca-shop-image", attrs = "") {
+    const label = item?.name || "商品";
+    if (item?.imageUrl) {
+      return `<span class="${className}"${attrs}><img src="${escapeHtml(item.imageUrl)}" alt="${escapeHtml(label)} 预览图" loading="lazy" /></span>`;
+    }
+    return `<span class="${className} is-empty" aria-hidden="true"${attrs}>${escapeHtml(label.slice(0, 1))}</span>`;
+  }
+
+  function redemptionStatusLabel(status) {
+    if (status === "processing") return "处理中";
+    if (status === "completed") return "已完成";
+    if (status === "cancelled") return "已取消";
+    return "待处理";
+  }
+
   function notificationIcon() {
     return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z"/><path d="M10 21h4"/></svg>`;
   }
@@ -894,6 +1027,89 @@
     `;
   }
 
+  function renderShopPanel(user) {
+    const points = pointsMeta(user);
+    const items = shopItems();
+    return `
+      <div class="zca-shop-panel">
+        <div class="zca-shop-balance">
+          <span>可用积分</span>
+          <strong>${escapeHtml(points.available)}</strong>
+          <small>评论等级每升 10 级获得 1 积分。</small>
+        </div>
+        <div class="zca-shop-grid">
+          ${items.map((item) => `
+            <article class="zca-shop-item">
+              ${shopImageHtml(item)}
+              <strong>${escapeHtml(item.name)}</strong>
+              ${item.description ? `<p class="zca-shop-desc">${escapeHtml(item.description)}</p>` : ""}
+              <span>${escapeHtml(item.price)} 积分 · 剩余 ${escapeHtml(item.stock)}</span>
+              <button class="zca-primary-btn" type="button" data-zca-redeem-start="${escapeHtml(item.key)}" ${points.available < item.price || item.stock <= 0 ? "disabled" : ""}>兑换</button>
+            </article>
+          `).join("")}
+        </div>
+        ${(user.shopRedemptions || []).length ? `
+          <div class="zca-shop-history">
+            <h3>兑换记录</h3>
+            ${(user.shopRedemptions || []).slice().reverse().map((item) => `
+              <p><span>${escapeHtml(item.itemLabel)}</span><small>${escapeHtml(redemptionStatusLabel(item.status))} · ${escapeHtml(formatDate(item.createdAt))}</small></p>
+            `).join("")}
+          </div>
+        ` : ""}
+      </div>
+    `;
+  }
+
+  function renderRedeemConfirm(key) {
+    const body = document.querySelector("[data-zca-account-body]");
+    const points = pointsMeta(state.user);
+    const item = shopItems().find((candidate) => candidate.key === key);
+    if (!body || !item) {
+      notify("这个商品暂时不可兑换。", true);
+      return;
+    }
+    body.innerHTML = `
+      <div class="zca-redeem-confirm">
+        <div>
+          <span>兑换商品</span>
+          <strong>${escapeHtml(item.name)}</strong>
+          ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ""}
+          <small>${escapeHtml(item.price)} 积分 · 当前可用 ${escapeHtml(points.available)} 积分 · 剩余 ${escapeHtml(item.stock)}</small>
+        </div>
+        <p>确认后需要填写手机号，提交成功后预计 10 个工作日内到账。</p>
+        <div class="zca-form-actions">
+          <button class="zca-primary-btn" type="button" data-zca-redeem-phone="${escapeHtml(item.key)}">确认兑换</button>
+          <button class="zca-quiet-btn" type="button" data-zca-shop-back>返回商城</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderRedeemPhone(key) {
+    const body = document.querySelector("[data-zca-account-body]");
+    const item = shopItems().find((candidate) => candidate.key === key);
+    if (!body || !item) {
+      notify("这个商品暂时不可兑换。", true);
+      return;
+    }
+    body.innerHTML = `
+      <form class="zca-account-form zca-redeem-form" data-zca-redeem-form="${escapeHtml(item.key)}">
+        <div class="zca-redeem-summary">
+          <strong>${escapeHtml(item.name)}</strong>
+          ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ""}
+          <small>${escapeHtml(item.price)} 积分，预计 10 个工作日内到账。</small>
+        </div>
+        <label><span>手机号</span><input name="phone" inputmode="tel" autocomplete="tel" required placeholder="请输入接收权益的手机号" /></label>
+        <label><span>备注（可选）</span><textarea name="note" maxlength="200" rows="2" placeholder="例如：希望补充给管理员的说明"></textarea></label>
+        <div class="zca-form-actions">
+          <button class="zca-primary-btn" type="submit">提交兑换</button>
+          <button class="zca-quiet-btn" type="button" data-zca-redeem-start="${escapeHtml(item.key)}">上一步</button>
+        </div>
+      </form>
+    `;
+    body.querySelector("input[name='phone']")?.focus();
+  }
+
   function updateAuthorizedUser(user) {
     if (!user) return;
     clearProfileCacheForUser(user);
@@ -918,10 +1134,13 @@
     const root = ensureModalRoot();
     const user = state.user;
     const badge = user.badgeLabel || (user.role === "admin" ? "博主" : "");
+    const accountLevel = levelMeta(user);
     const tabs = user.role === "admin"
-      ? [["profile", "资料"], ["level", "等级"], ["notice", "通知"], ["admin", "用户"]]
-      : [["profile", "资料"], ["password", "密码"], ["notice", "通知"], ["level", "等级"]];
-    const activePanel = [...tabs.map(([name]) => name), "password"].includes(panel) ? panel : "profile";
+      ? [["profile", "资料"], ["shop", "商城"], ["admin", "管理"]]
+      : [["profile", "资料"], ["shop", "商城"]];
+    const tabNames = tabs.map(([name]) => name);
+    const activePanel = panel.startsWith("profile") ? "profile" : tabNames.includes(panel) ? panel : "profile";
+    const bodyPanel = panel === "profileSocial" ? "profileSocial" : activePanel;
     root.innerHTML = `
       <div class="zca-modal-card zca-account-modal" role="dialog" aria-modal="true" aria-labelledby="zcaAccountTitle">
         <button class="zca-close" type="button" data-zca-close aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg></button>
@@ -936,13 +1155,11 @@
             </div>
             <div class="zca-account-pills">
               <span>UID: ${escapeHtml(user.uid || String(user.id || "").slice(0, 8))}</span>
+              <span>${escapeHtml(accountLevel.label)}</span>
+              <span>经验 ${escapeHtml(accountLevel.experience)}</span>
               <span>${escapeHtml(user.email || "")}</span>
             </div>
           </div>
-          <button class="zca-notice-round" type="button" data-zca-open-notifications aria-label="打开通知">
-            ${notificationIcon()}
-            ${state.unread ? `<span>${escapeHtml(state.unread)}</span>` : ""}
-          </button>
         </header>
         <nav class="zca-account-tabs" aria-label="用户中心">
           ${tabs.map(([name, label]) => `<button type="button" data-zca-center-panel="${name}" class="${name === activePanel ? "is-active" : ""}">${label}</button>`).join("")}
@@ -952,7 +1169,7 @@
       </div>
     `;
     root.classList.remove("is-hidden");
-    renderAccountPanel(activePanel);
+    renderAccountPanel(bodyPanel);
   }
 
   function renderAccountPanel(panel) {
@@ -988,64 +1205,93 @@
       return;
     }
 
+    if (panel === "profileSocial") {
+      body.innerHTML = `
+        <form class="zca-account-form zca-social-panel" data-zca-social-form>
+          <div class="zca-panel-head">
+            <div>
+              <strong>个人资料</strong>
+              <small>编辑社交链接，最多 ${SOCIAL_LIMIT} 条</small>
+            </div>
+            <button class="zca-quiet-btn" type="button" data-zca-center-panel="profile">返回</button>
+          </div>
+          <div class="zca-social-editor" data-zca-social-editor>
+            <div class="zca-social-list-editor" data-zca-social-list></div>
+            <div class="zca-social-footer">
+              <div class="zca-social-add">
+                <button class="zca-quiet-btn zca-social-add-pill" type="button" data-zca-social-add-toggle><span>+</span> 新增</button>
+                <div class="zca-social-menu">
+                  ${SOCIAL_PRESETS.map((item) => `<button type="button" data-zca-social-add="${escapeHtml(item.label)}">${escapeHtml(item.label)}</button>`).join("")}
+                </div>
+              </div>
+              <span data-zca-social-count>0 / ${SOCIAL_LIMIT}</span>
+            </div>
+          </div>
+          <button class="zca-primary-btn" type="submit">保存社交链接</button>
+        </form>
+      `;
+      mountZcaSocialEditor(user);
+      return;
+    }
+
+    if (panel === "profile") {
+      body.innerHTML = `
+        <form class="zca-account-form zca-profile-form" data-zca-profile-form>
+          <div class="zca-panel-head zca-full-row">
+            <div>
+              <strong>个人资料</strong>
+              <small>直接维护昵称、用户名、头像、主页和简介；社交链接在单独列表里管理</small>
+            </div>
+          </div>
+          <label><span>注册邮箱</span><input value="${escapeHtml(user.email || "")}" disabled /></label>
+          <label><span>昵称</span><input name="displayName" maxlength="64" required value="${escapeHtml(user.displayName || user.username || "")}" /></label>
+          <label><span>用户名（@ 后面的字符）</span><input name="username" minlength="3" maxlength="32" value="${escapeHtml(user.username || "")}" placeholder="zeora" /></label>
+          <label><span>头像外链</span><input name="avatarUrl" type="url" value="${escapeHtml(user.avatarUrl || "")}" placeholder="https://example.com/avatar.png" /></label>
+          <label><span>主页背景图</span><input name="backgroundUrl" type="url" value="${escapeHtml(user.backgroundUrl || "")}" placeholder="https://example.com/cover.jpg" /></label>
+          <label><span>个人主页 / 个人博客</span><input name="websiteUrl" value="${escapeHtml(user.websiteUrl || "")}" placeholder="https://example.com" /></label>
+          <label class="zca-full-row"><span>个人简介</span><input name="bio" maxlength="120" value="${escapeHtml(user.bio || "")}" placeholder="一句话介绍自己" /></label>
+          <button class="zca-quiet-btn zca-full-row" type="button" data-zca-center-panel="profileSocial">编辑社交链接</button>
+          <div class="zca-profile-footer zca-full-row">
+            <button class="zca-quiet-btn" type="button" data-zca-center-panel="password">更改密码</button>
+            <button class="zca-primary-btn" type="submit">保存资料</button>
+            <button class="zca-quiet-btn" type="button" data-zca-logout>退出登录</button>
+          </div>
+        </form>
+      `;
+      return;
+    }
+
     if (panel === "level") {
       body.innerHTML = renderLevelCard(user);
       return;
     }
 
-    if (panel === "admin") {
-      body.innerHTML = `
-        <form class="zca-account-form zca-admin-notice-form" data-zca-admin-notification-form>
-          <div class="zca-panel-head">
-            <div>
-              <strong>发送通知</strong>
-              <small>可给全部用户或指定用户发送评论、友链、系统通知</small>
-            </div>
-          </div>
-          <div class="zca-admin-notice-grid">
-            <label><span>类型</span><select name="type"><option value="friend">友链通知</option><option value="comment">评论通知</option><option value="system">系统通知</option></select></label>
-            <label><span>对象</span><select name="target"><option value="all">全部用户</option><option value="user">指定用户</option></select></label>
-            <label><span>指定用户</span><input name="userId" placeholder="UID / 邮箱 / 用户名 / ID" /></label>
-            <label><span>链接</span><input name="link" placeholder="https://example.com 或 /links/" /></label>
-          </div>
-          <label><span>标题</span><input name="title" maxlength="80" placeholder="友链通知" /></label>
-          <label><span>内容</span><textarea name="body" maxlength="500" required placeholder="写给用户看的通知内容"></textarea></label>
-          <button class="zca-primary-btn" type="submit">发送通知</button>
-        </form>
-        <div class="zca-admin-toolbar">
-          <input type="search" data-zca-admin-search placeholder="搜索用户、邮箱、UID" />
-          <select data-zca-admin-role>
-            <option value="all">全部身份</option>
-            <option value="admin">管理员</option>
-            <option value="user">普通用户</option>
-          </select>
-          <select data-zca-admin-status>
-            <option value="all">全部状态</option>
-            <option value="active">可用</option>
-            <option value="blocked">停用</option>
-          </select>
-          <button class="zca-quiet-btn" type="button" data-zca-admin-refresh>刷新</button>
-        </div>
-        <div class="zca-admin-table-wrap" data-zca-admin-table>正在加载用户...</div>
-      `;
-      loadAdminUsers();
+    if (panel === "shop") {
+      body.innerHTML = renderShopPanel(user);
+      loadShopCatalog().then(() => {
+        if (document.querySelector("[data-zca-account-body]") === body) body.innerHTML = renderShopPanel(state.user);
+      });
       return;
     }
 
-    body.innerHTML = `
-      <form class="zca-account-form zca-profile-form" data-zca-profile-form>
-        <label><span>显示名称</span><input name="displayName" maxlength="64" required value="${escapeHtml(user.displayName || user.username || "")}" /></label>
-        <label><span>头像外链</span><input name="avatarUrl" type="url" value="${escapeHtml(user.avatarUrl || "")}" placeholder="https://example.com/avatar.png" /></label>
-        <label><span>主页背景图</span><input name="backgroundUrl" type="url" value="${escapeHtml(user.backgroundUrl || "")}" placeholder="https://example.com/cover.jpg" /></label>
-        <label><span>个人网站</span><input name="websiteUrl" value="${escapeHtml(user.websiteUrl || "")}" placeholder="https://example.com" /></label>
-        <label><span>个人简介</span><input name="bio" maxlength="120" value="${escapeHtml(user.bio || "")}" placeholder="一句话介绍自己" /></label>
-        <label class="zca-full-row"><span>社交链接</span><textarea name="socialLinksText" rows="4" placeholder="B站 https://space.bilibili.com/...\nTwitter https://x.com/...\n抖音 https://www.douyin.com/...">${escapeHtml(socialLinksToText(user))}</textarea></label>
-        <label><span>邮箱</span><input value="${escapeHtml(user.email || "")}" disabled /></label>
-        ${user.role === "admin" ? `<button class="zca-quiet-btn" type="button" data-zca-center-panel="password">修改密码</button>` : ""}
-        <button class="zca-quiet-btn" type="button" data-zca-center-panel="level">查看等级详情</button>
-        <button class="zca-primary-btn" type="submit">保存资料</button>
-      </form>
-    `;
+    if (panel === "admin") {
+      body.innerHTML = `
+        <div class="zca-admin-panel">
+          <div class="zca-panel-head">
+            <div>
+              <strong>管理</strong>
+              <small>通知、用户、商城和兑换记录都在这里管理</small>
+            </div>
+          </div>
+          <div class="zca-admin-tabs" aria-label="管理功能">
+            ${[["notice", "通知"], ["users", "用户"], ["shop", "商城"], ["ai", "AI"], ["redemptions", "兑换"]].map(([name, label]) => `<button type="button" data-zca-admin-panel="${name}" class="${state.adminPanel === name ? "is-active" : ""}">${label}</button>`).join("")}
+          </div>
+          <div class="zca-admin-panel-body" data-zca-admin-panel-body></div>
+        </div>
+      `;
+      renderAdminSubPanel();
+      return;
+    }
   }
 
   function renderNotificationItems(items) {
@@ -1082,6 +1328,266 @@
     }
   }
 
+  async function loadAiConfig() {
+    const wrap = document.querySelector("[data-zca-ai-config-wrap]");
+    if (wrap) wrap.textContent = "正在加载 AI 配置...";
+    try {
+      const payload = await api("aiConfig", { method: "POST", body: {} });
+      state.aiConfigs = payload.aiConfigs || [];
+      state.aiConfig = payload.aiConfig || state.aiConfigs.find((item) => item.isDefault) || state.aiConfigs[0] || {};
+      renderAiConfigPanel();
+    } catch (error) {
+      if (wrap) wrap.innerHTML = `<p class="zca-empty">${escapeHtml(error.message)}</p>`;
+      notify(error.message, true);
+    }
+  }
+
+  function renderAiConfigPanel() {
+    const wrap = document.querySelector("[data-zca-ai-config-wrap]");
+    if (!wrap) return;
+    const configs = state.aiConfigs || [];
+    const editing = state.aiEditConfig;
+    const isNew = state.aiEditingNew;
+    let html = `
+      <div class="zca-panel-head">
+        <div>
+          <strong>AI 评论配置</strong>
+          <small>AI 回复和 AI 润色使用这里的 OpenAI-compatible 配置，可维护多套并切换默认。</small>
+        </div>
+      </div>
+    `;
+    if (editing) {
+      html += `
+      <form class="zca-account-form zca-ai-config-form" data-zca-ai-config-form>
+        <input type="hidden" name="id" value="${escapeHtml(editing.id || "")}" />
+        <div class="zca-panel-head">
+          <div>
+            <strong>${isNew ? "新增 AI 配置" : "编辑 AI 配置"}</strong>
+            <small>${isNew ? "创建一个新的 AI 服务配置。" : `正在编辑：${escapeHtml(editing.name || "未命名")}`}</small>
+          </div>
+          <button class="zca-quiet-btn" type="button" data-zca-ai-cancel>返回列表</button>
+        </div>
+        <label><span>配置名称</span><input name="name" maxlength="40" value="${escapeHtml(editing.name || "")}" placeholder="例如：DeepSeek 主用" /></label>
+        <label class="zca-switch-mini"><input name="enabled" type="checkbox" ${editing.enabled !== false ? "checked" : ""} /> 启用 AI 评论</label>
+        <label class="zca-switch-mini"><input name="requireLogin" type="checkbox" ${editing.requireLogin !== false ? "checked" : ""} /> 仅登录用户可用</label>
+        <label><span>服务名称</span><input name="provider" maxlength="40" value="${escapeHtml(editing.provider || "DeepSeek")}" placeholder="DeepSeek" /></label>
+        <label><span>接口地址</span><input name="apiBaseUrl" value="${escapeHtml(editing.apiBaseUrl || "")}" placeholder="https://api.deepseek.com/chat/completions" /></label>
+        <label><span>模型</span><input name="model" maxlength="80" value="${escapeHtml(editing.model || "deepseek-mimo")}" placeholder="deepseek-mimo" /></label>
+        <label><span>API Key</span><input name="apiKey" autocomplete="off" placeholder="${editing.hasApiKey ? escapeHtml(editing.apiKeyMasked || "已配置，留空不修改") : "粘贴新的 API Key"}" /></label>
+        <label><span>温度</span><input name="temperature" type="number" min="0" max="2" step="0.1" value="${escapeHtml(editing.temperature ?? 0.72)}" /></label>
+        <label><span>最大输出 tokens</span><input name="maxTokens" type="number" min="60" max="1000" step="10" value="${escapeHtml(editing.maxTokens || 220)}" /></label>
+        <label><span>系统提示词</span><textarea name="systemPrompt" maxlength="1200" placeholder="控制评论风格、长度和语气">${escapeHtml(editing.systemPrompt || "")}</textarea></label>
+        <label class="zca-switch-mini"><input name="isDefault" type="checkbox" ${editing.isDefault ? "checked" : ""} /> 设为默认配置</label>
+        <label class="zca-switch-mini"><input name="clearApiKey" type="checkbox" /> 清除已保存的 API Key</label>
+        <div class="zca-form-actions">
+          <button class="zca-primary-btn" type="submit">保存 AI 配置</button>
+          <button class="zca-quiet-btn" type="button" data-zca-ai-cancel>取消</button>
+        </div>
+      </form>
+      `;
+    } else {
+      html += `
+      <div class="zca-ai-config-list">
+        ${configs.length ? configs.map((item) => `
+          <article class="zca-ai-config-card${item.isDefault ? " is-default" : ""}">
+            <div class="zca-ai-config-card-head">
+              <strong>${escapeHtml(item.name || "未命名")}</strong>
+              ${item.isDefault ? '<span class="zca-tag">默认</span>' : ""}
+            </div>
+            <div class="zca-ai-config-meta">${escapeHtml(item.provider || "-")} · ${escapeHtml(item.model || "-")}</div>
+            <div class="zca-ai-config-meta">${item.hasApiKey ? "API Key 已配置" : "未配置 API Key"} · 调用 ${escapeHtml(item.usage?.calls || 0)} 次 · tokens ${escapeHtml(item.usage?.totalTokens || 0)}</div>
+            <div class="zca-ai-config-tools">
+              <button class="zca-quiet-btn" type="button" data-zca-ai-edit="${escapeHtml(item.id || "")}">编辑</button>
+              ${item.isDefault ? "" : `<button class="zca-quiet-btn" type="button" data-zca-ai-default="${escapeHtml(item.id || "")}">设为默认</button>`}
+              <button class="zca-quiet-btn" type="button" data-zca-ai-test="${escapeHtml(item.id || "")}">测试</button>
+              <button class="zca-quiet-btn zca-danger" type="button" data-zca-ai-delete="${escapeHtml(item.id || "")}">删除</button>
+            </div>
+          </article>
+        `).join("") : '<p class="zca-empty">还没有 AI 配置，点击下方按钮新增。</p>'}
+      </div>
+      <div class="zca-form-actions">
+        <button class="zca-primary-btn" type="button" data-zca-ai-new>新增配置</button>
+      </div>
+      `;
+    }
+    wrap.innerHTML = html;
+  }
+
+  async function loadShopCatalog(admin = false) {
+    try {
+      const payload = await api(admin ? "adminShopCatalog" : "shopCatalog", { method: admin ? "POST" : "GET" });
+      state.shopItems = payload.items || [];
+      return state.shopItems;
+    } catch (error) {
+      if (!admin) state.shopItems = [];
+      return state.shopItems;
+    }
+  }
+
+  function renderAdminSubPanel() {
+    const body = document.querySelector("[data-zca-admin-panel-body]");
+    if (!body) return;
+    document.querySelectorAll("[data-zca-admin-panel]").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.zcaAdminPanel === state.adminPanel);
+    });
+
+    if (state.adminPanel === "notice") {
+      body.innerHTML = `
+        <form class="zca-account-form zca-admin-notice-form" data-zca-admin-notification-form>
+          <div class="zca-panel-head">
+            <div>
+              <strong>发送通知</strong>
+              <small>可给全部用户或指定用户发送评论、友链、系统通知</small>
+            </div>
+          </div>
+          <div class="zca-admin-notice-grid">
+            <label><span>类型</span><select name="type"><option value="friend">友链通知</option><option value="comment">评论通知</option><option value="system">系统通知</option></select></label>
+            <label><span>对象</span><select name="target"><option value="all">全部用户</option><option value="user">指定用户</option></select></label>
+            <label><span>指定用户</span><input name="userId" placeholder="UID / 邮箱 / 用户名 / ID" /></label>
+            <label><span>链接</span><input name="link" placeholder="https://example.com 或 /links/" /></label>
+          </div>
+          <label><span>标题</span><input name="title" maxlength="80" placeholder="友链通知" /></label>
+          <label><span>内容</span><textarea name="body" maxlength="500" required placeholder="写给用户看的通知内容"></textarea></label>
+          <button class="zca-primary-btn" type="submit">发送通知</button>
+        </form>
+      `;
+      return;
+    }
+
+    if (state.adminPanel === "shop") {
+      body.innerHTML = `<div data-zca-shop-admin-wrap class="zca-shop-admin-wrap">正在加载商品...</div>`;
+      loadShopCatalog(true).then(renderShopAdminPanel);
+      return;
+    }
+
+    if (state.adminPanel === "ai") {
+      body.innerHTML = `<div data-zca-ai-config-wrap class="zca-ai-config-wrap">正在加载 AI 配置...</div>`;
+      loadAiConfig();
+      return;
+    }
+
+    if (state.adminPanel === "redemptions") {
+      body.innerHTML = `
+        <div class="zca-admin-toolbar">
+          <button class="zca-quiet-btn" type="button" data-zca-redemption-refresh>刷新记录</button>
+        </div>
+        <div class="zca-admin-table-wrap" data-zca-redemption-table>正在加载兑换记录...</div>
+      `;
+      loadRedemptions();
+      return;
+    }
+
+    body.innerHTML = `
+      <div class="zca-admin-toolbar">
+        <input type="search" data-zca-admin-search placeholder="搜索用户、邮箱、UID" />
+        <select data-zca-admin-role>
+          <option value="all">全部身份</option>
+          <option value="admin">管理员</option>
+          <option value="user">普通用户</option>
+        </select>
+        <select data-zca-admin-status>
+          <option value="all">全部状态</option>
+          <option value="active">可用</option>
+          <option value="blocked">停用</option>
+        </select>
+        <button class="zca-quiet-btn" type="button" data-zca-admin-refresh>刷新</button>
+      </div>
+      <div class="zca-admin-table-wrap" data-zca-admin-table>正在加载用户...</div>
+    `;
+    loadAdminUsers();
+  }
+
+  function renderShopAdminPanel() {
+    const wrap = document.querySelector("[data-zca-shop-admin-wrap]");
+    if (!wrap) return;
+    const items = shopItems(true);
+    wrap.innerHTML = `
+      <div class="zca-shop-admin-grid">
+        ${items.map((item) => `
+          <form class="zca-shop-admin-card" data-zca-shop-item-form="${escapeHtml(item.key)}">
+            <input name="key" type="hidden" value="${escapeHtml(item.key)}" />
+            <div class="zca-shop-admin-section zca-shop-admin-section-icon">
+              <strong>封面管理</strong>
+              ${shopImageHtml(item, "zca-shop-admin-image", ` data-zca-shop-image-preview="${escapeHtml(item.key)}"`)}
+              <label><span>商品封面</span><input name="imageUrl" value="${escapeHtml(item.imageUrl || "")}" placeholder="https://example.com/cover.jpg 或 /img/cover.jpg" data-zca-shop-image-input="${escapeHtml(item.key)}" /></label>
+            </div>
+            <div class="zca-shop-admin-section">
+              <strong>内容管理</strong>
+              <label><span>商品名称</span><input name="name" maxlength="40" value="${escapeHtml(item.name)}" /></label>
+              <label><span>商品说明</span><textarea name="description" maxlength="120" placeholder="兑换后按填写手机号发放会员权益。">${escapeHtml(item.description || "")}</textarea></label>
+              <label class="zca-switch-mini"><input name="enabled" type="checkbox" ${item.enabled ? "checked" : ""} /> 上架展示</label>
+            </div>
+            <div class="zca-shop-admin-section">
+              <strong>积分与库存</strong>
+              <label><span>所需积分</span><input name="price" type="number" min="1" step="1" value="${escapeHtml(item.price)}" /></label>
+              <label><span>剩余库存</span><input name="stock" type="number" min="0" step="1" value="${escapeHtml(item.stock)}" /></label>
+            </div>
+            <button class="zca-primary-btn" type="submit">保存商品</button>
+          </form>
+        `).join("")}
+        <form class="zca-shop-admin-card is-new" data-zca-shop-item-form="new">
+          <div class="zca-shop-admin-section zca-shop-admin-section-icon">
+            <strong>封面管理</strong>
+            <span class="zca-shop-admin-image is-empty" aria-hidden="true" data-zca-shop-image-preview="new">+</span>
+            <label><span>商品封面</span><input name="imageUrl" placeholder="https://example.com/cover.jpg 或 /img/cover.jpg" data-zca-shop-image-input="new" /></label>
+          </div>
+          <div class="zca-shop-admin-section">
+            <strong>内容管理</strong>
+            <label><span>商品标识</span><input name="key" maxlength="32" placeholder="youku" required /></label>
+            <label><span>商品名称</span><input name="name" maxlength="40" placeholder="优酷会员" required /></label>
+            <label><span>商品说明</span><textarea name="description" maxlength="120" placeholder="兑换后按填写手机号发放会员权益。"></textarea></label>
+            <label class="zca-switch-mini"><input name="enabled" type="checkbox" checked /> 上架展示</label>
+          </div>
+          <div class="zca-shop-admin-section">
+            <strong>积分与库存</strong>
+            <label><span>所需积分</span><input name="price" type="number" min="1" step="1" value="100" /></label>
+            <label><span>剩余库存</span><input name="stock" type="number" min="0" step="1" value="10" /></label>
+          </div>
+          <button class="zca-primary-btn" type="submit">新增商品</button>
+        </form>
+      </div>
+    `;
+  }
+
+  async function loadRedemptions() {
+    const table = document.querySelector("[data-zca-redemption-table]");
+    if (table) table.textContent = "正在加载兑换记录...";
+    try {
+      const payload = await api("listRedemptions", { method: "POST", body: {} });
+      state.redemptions = payload.redemptions || [];
+      renderRedemptionTable();
+    } catch (error) {
+      if (table) table.innerHTML = `<p class="zca-empty">${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  function renderRedemptionTable() {
+    const table = document.querySelector("[data-zca-redemption-table]");
+    if (!table) return;
+    if (!state.redemptions.length) {
+      table.innerHTML = `<p class="zca-empty">还没有兑换申请。</p>`;
+      return;
+    }
+    table.innerHTML = `
+      <table class="zca-user-table zca-redemption-table">
+        <thead><tr><th>用户</th><th>商品</th><th>手机号</th><th>状态</th><th>备注</th><th>时间</th><th>操作</th></tr></thead>
+        <tbody>
+          ${state.redemptions.map((item) => `
+            <tr>
+              <td>${escapeHtml(item.user?.displayName || item.user?.username || "")}<br />UID: ${escapeHtml(item.user?.uid || "")}</td>
+              <td>${escapeHtml(item.itemLabel)}<br />${escapeHtml(item.cost)} 积分</td>
+              <td>${escapeHtml(item.phone || "")}</td>
+              <td><select data-zca-redemption-status="${escapeHtml(item.id)}">${[["pending", "待处理"], ["processing", "处理中"], ["completed", "已完成"], ["cancelled", "已取消"]].map(([value, label]) => `<option value="${value}" ${item.status === value ? "selected" : ""}>${label}</option>`).join("")}</select></td>
+              <td><input data-zca-redemption-note="${escapeHtml(item.id)}" value="${escapeHtml(item.note || "")}" placeholder="可选" /></td>
+              <td>${escapeHtml(formatDate(item.createdAt))}</td>
+              <td><button type="button" data-zca-save-redemption="${escapeHtml(item.id)}">保存</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
   async function loadAdminUsers() {
     const table = document.querySelector("[data-zca-admin-table]");
     if (!table) return;
@@ -1113,7 +1619,7 @@
 
     table.innerHTML = `
       <table class="zca-user-table">
-        <thead><tr><th>用户</th><th>UID / 邮箱</th><th>身份</th><th>等级</th><th>状态</th><th>操作</th></tr></thead>
+        <thead><tr><th>用户</th><th>UID</th><th>邮箱</th><th>身份</th><th>等级</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>
           ${users.map((user) => {
             const level = levelMeta(user);
@@ -1121,7 +1627,13 @@
             return `
               <tr>
                 <td><div class="zca-admin-user">${avatarHtml(user)}<span><strong>${escapeHtml(user.displayName || user.username)}</strong><small>@${escapeHtml(user.username || "")}</small></span></div></td>
-                <td>UID: ${escapeHtml(user.uid || "")}<br>${escapeHtml(user.email || "")}</td>
+                <td>
+                  <div class="zca-uid-editor">
+                    <input data-zca-uid-input="${escapeHtml(user.id)}" maxlength="32" value="${escapeHtml(user.uid || "")}" placeholder="UID" />
+                    <button type="button" data-zca-save-uid="${escapeHtml(user.id)}">保存UID</button>
+                  </div>
+                </td>
+                <td>${escapeHtml(user.email || "")}</td>
                 <td>
                   <div class="zca-tag-editor">
                     <input data-zca-badge-label="${escapeHtml(user.id)}" maxlength="20" value="${escapeHtml(user.badgeLabel || (user.role === "admin" ? "博主" : ""))}" placeholder="例如：博主" />
@@ -1151,6 +1663,8 @@
     state.user = user;
     state.token = sessionToken;
     state.manualMode = false;
+    state.anonymousMode = false;
+    state.anonymousName = "";
     writeSession({ user: state.user, sessionToken: state.token });
     removeManualSwitchButton();
     syncTwikooProfile();
@@ -1171,6 +1685,7 @@
     applyCommentMode();
 
     const manual = isManualMode() && !state.user;
+    const anonymous = state.anonymousMode && !state.user;
     if (!manual) removeManualSwitchButton();
 
     const wrap = getCommentWrap();
@@ -1188,14 +1703,15 @@
       bar.remove();
       bar.dataset.zcaState = "";
       window.SolitudeAIComment?.init?.();
-      requestAnimationFrame(syncCommentActionOverlay);
       return;
     }
 
     if (state.user) {
       if (!placeProfileBar(bar)) return;
+      bar.querySelectorAll(".zca-comment-level, .zca-comment-role").forEach((pill) => pill.remove());
       const level = levelMeta(state.user);
-      const userKey = `user:${state.user.id}:${state.user.displayName}:${state.user.avatarUrl}:${state.user.role}:${level.label}`;
+      const badge = state.user.badgeLabel || (state.user.role === "admin" ? "博主" : "");
+      const userKey = `user:${state.user.id}:${state.user.displayName}:${state.user.avatarUrl}:${state.user.role}:${level.label}:${badge}:${state.user.badgeColor || ""}`;
       bar.className = "zeora-comment-auth is-authorized";
       if (bar.dataset.zcaState === userKey) {
         syncTwikooProfile();
@@ -1203,37 +1719,38 @@
         return;
       }
       bar.dataset.zcaState = userKey;
-      bar.innerHTML = `
-        <div class="zca-user-cluster">
-          <a class="zca-user zca-user-link" href="${escapeHtml(publicProfileUrl(state.user))}">
-            ${avatarHtml(state.user)}
-            <span class="zca-name">${escapeHtml(state.user.displayName || state.user.username)}</span>
-          </a>
-          <button class="zca-link-btn" type="button" data-zca-open-user-center>用户中心</button>
-          <button class="zca-link-btn" type="button" data-zca-logout>注销</button>
-        </div>
-      `;
+      bar.innerHTML = renderAuthUserCluster(state.user);
       syncTwikooProfile();
       hydrateCommentAvatars();
       return;
     }
 
-    if (!placeGateBar(bar)) return;
+    if (anonymous) {
+      if (!placeProfileBar(bar)) return;
+      const name = state.anonymousName || pickAnonymousName();
+      if (state.anonymousName !== name) state.anonymousName = name;
+      const anonymousKey = `anonymous:${state.anonymousName}:${anonymousConfig().avatarUrl}`;
+      bar.className = "zeora-comment-auth is-anonymous";
+      if (bar.dataset.zcaState === anonymousKey) {
+        syncTwikooProfile();
+        return;
+      }
+      bar.dataset.zcaState = anonymousKey;
+      bar.innerHTML = renderAnonymousCluster();
+      syncTwikooProfile();
+      return;
+    }
+
+    if (!placeProfileBar(bar)) return;
     bar.className = "zeora-comment-auth is-gated";
     if (bar.dataset.zcaState === "guest") return;
     bar.dataset.zcaState = "guest";
     bar.innerHTML = `
       <div class="zca-choice-panel" aria-label="评论登录方式">
-        <div class="zca-login-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" focusable="false">
-            <path d="M12 12.3a4.1 4.1 0 1 0 0-8.2 4.1 4.1 0 0 0 0 8.2Z" />
-            <path d="M5.2 20.2v-1.4c0-3 2.3-5.1 5.3-5.1h3c3 0 5.3 2.1 5.3 5.1v1.4" />
-          </svg>
-        </div>
-        <div class="zca-choice-title">请登录后发表评论</div>
         <div class="zca-choice-actions">
-          <button class="zca-login-btn" type="button" data-zca-login>去登录</button>
+          <button class="zca-login-btn" type="button" data-zca-login>登录发表评论</button>
           <button class="zca-manual-btn" type="button" data-zca-manual>其他方式</button>
+          <button class="zca-anonymous-btn" type="button" data-zca-anonymous>匿名</button>
         </div>
       </div>
     `;
@@ -1247,7 +1764,8 @@
     state.email = email;
     button.disabled = true;
     try {
-      await api("requestCode", { body: { email } });
+      const captcha = await runCaptchaChallenge();
+      await api("requestCode", { body: { email, purpose: "login", captcha } });
       renderModal("code", "验证码已发送，请检查邮箱。");
     } catch (error) {
       renderModal("email", error.message);
@@ -1341,6 +1859,101 @@
       ".tk-comment-nick",
       "a[href]"
     ].join(","))).filter((node) => !node.closest(".tk-content, .tk-replies, .OwO, .tk-owo, .tk-preview"));
+  }
+
+  function commentAuthorName(comment) {
+    const main = directChildByClass(comment, "tk-main") || comment.querySelector(":scope > .tk-main");
+    const header = directChildByClass(main, "tk-row") || main?.querySelector(":scope > .tk-row:first-child");
+    const source = header || main || comment;
+    const node = Array.from(source.querySelectorAll([
+      ".tk-nick",
+      ".tk-nickname",
+      ".tk-author",
+      ".tk-user",
+      ".tk-meta a",
+      ".tk-comment-author",
+      ".tk-comment-nick",
+      "a[href]"
+    ].join(","))).find((item) => item.textContent.trim());
+    return String(node?.textContent || "")
+      .replace(/Lv\.?\s*\d+/gi, "")
+      .replace(/博主|管理员|普通用户/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function commentDomId(comment) {
+    const dataset = comment?.dataset || {};
+    const candidates = [
+      dataset.id,
+      dataset.commentId,
+      dataset.uid,
+      dataset.objectId,
+      comment?.getAttribute?.("data-id"),
+      comment?.getAttribute?.("data-comment-id"),
+      comment?.getAttribute?.("data-uid"),
+      comment?.id
+    ];
+    return candidates.map((value) => String(value || "").trim()).find(Boolean) || "";
+  }
+
+  function rootCommentFor(comment) {
+    let root = comment;
+    while (root?.parentElement) {
+      const replyList = root.parentElement.closest(".tk-replies");
+      const parentComment = replyList?.closest(".tk-comment");
+      if (!replyList || !parentComment || parentComment === root) break;
+      root = parentComment;
+    }
+    return root || comment;
+  }
+
+  function prepareReplyContext(targetComment) {
+    const rootComment = rootCommentFor(targetComment);
+    const replyToUser = rootComment && targetComment !== rootComment ? commentAuthorName(targetComment) : "";
+    state.replyContext = {
+      active: true,
+      rootId: commentDomId(rootComment),
+      targetId: commentDomId(targetComment),
+      replyToUser,
+      rootComment,
+      targetComment
+    };
+    return state.replyContext;
+  }
+
+  function nativeParentId(payload) {
+    return String(payload?.pid || payload?.rid || payload?.parent_id || payload?.parentId || payload?.root_parent_id || "").trim();
+  }
+
+  function hasOpenNativeReplyComposer() {
+    return Boolean(document.querySelector("#twikoo .tk-comment .tk-submit textarea, #twikoo .tk-comment .tk-submit .el-textarea__inner, #twikoo .tk-replies .tk-submit textarea, #twikoo .tk-replies .tk-submit .el-textarea__inner"));
+  }
+
+  function replyContextPayload(payload) {
+    const context = state.replyContext;
+    const nativeParent = nativeParentId(payload);
+    if (!context?.active && !nativeParent) return {};
+    if (context?.active && !nativeParent && !hasOpenNativeReplyComposer()) return {};
+
+    const rootId = context?.rootId || nativeParent;
+    const fields = {
+      reply_to_user: context?.replyToUser || "",
+      replyToUser: context?.replyToUser || "",
+      _zeoraReply: {
+        rootId,
+        targetId: context?.targetId || nativeParent,
+        replyToUser: context?.replyToUser || ""
+      }
+    };
+    if (rootId) {
+      fields.parent_id = rootId;
+      fields.parentId = rootId;
+      fields.root_parent_id = rootId;
+      fields.pid = rootId;
+      fields.rid = rootId;
+    }
+    return fields;
   }
 
   function commentIdentityKeys(comment) {
@@ -1441,7 +2054,7 @@
     const index = await fetchProfileIndex();
     const anchors = Array.from(document.querySelectorAll("#twikoo a[href]"))
       .map((anchor) => ({ anchor, handle: profileHandleFromUrl(anchor.href) }))
-      .filter((item) => item.handle);
+      .filter((item) => item.handle && !item.anchor.closest("#zeora-comment-auth"));
 
     await Promise.all(anchors.map(async ({ anchor, handle }) => {
       const user = await fetchProfileByHandle(handle);
@@ -1480,6 +2093,7 @@
   }
 
   function hydrateCommentBadges(anchor, user) {
+    if (anchor.closest("#zeora-comment-auth")) return;
     if (!anchor.textContent.trim()) return;
     const level = levelMeta(user);
     const badge = user.badgeLabel || (user.role === "admin" ? "博主" : "");
@@ -1528,6 +2142,23 @@
     };
   }
 
+  function anonymousIdentityPayload() {
+    if (!state.anonymousMode || state.user) return {};
+    const name = state.anonymousName || pickAnonymousName();
+    return {
+      nick: name,
+      mail: ANONYMOUS_EMAIL,
+      link: "",
+      zcaAnonymous: true,
+      anonymousName: name,
+      _zeoraAnonymous: {
+        enabled: true,
+        name,
+        reviewLevel: "strict"
+      }
+    };
+  }
+
   function parseJsonBody(value) {
     if (!value || typeof value !== "string") return null;
     try {
@@ -1537,8 +2168,14 @@
     }
   }
 
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   function isCommentSubmitPayload(payload) {
-    return payload && typeof payload === "object" && payload.event === "COMMENT_SUBMIT";
+    if (!payload || typeof payload !== "object") return false;
+    if (["COMMENT_SUBMIT", "COMMENT_CREATE"].includes(payload.event)) return true;
+    return Boolean(payload.comment || payload.content || payload.message || payload.text);
   }
 
   function shouldSkipFetchPatch(url) {
@@ -1551,31 +2188,42 @@
   }
 
   async function syncSubmittedComment(comment, response) {
-    if (!state.user || !state.token) return;
     try {
-      const payload = await api("bindCommentAuthor", {
-        method: "POST",
-        body: {
-          comment,
-          response,
-          path: window.location.pathname,
-          pageUrl: window.location.href
+      let payload = null;
+      if (state.user && state.token) {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          payload = await api("bindCommentAuthor", {
+            method: "POST",
+            body: {
+              comment,
+              response,
+              path: window.location.pathname,
+              pageUrl: window.location.href
+            }
+          });
+          if (payload.updated || payload.user) break;
+          await delay([360, 900, 1600, 2600][attempt] || 2600);
         }
-      });
-      if (payload.user) updateAuthorizedUser(payload.user);
-      if (state.reply.slot?.isConnected) restoreReplyComposer();
+        if (payload?.user) updateAuthorizedUser(payload.user);
+        if (!payload?.updated) {
+          const refreshed = await api("me").catch(() => null);
+          if (refreshed?.user) updateAuthorizedUser(refreshed.user);
+        }
+      }
       setTimeout(() => {
+        renderBar();
         syncTwikooProfile();
+        enhanceCommentProfileLinks();
         hydrateCommentAvatars();
       }, 240);
     } catch (error) {
-      console.warn("[comment-auth] Failed to bind submitted comment author:", error);
+      console.warn("[comment-auth] Failed to sync submitted comment:", error);
     }
   }
 
   async function enrichFetchInput(input, init = {}) {
     const method = String(init.method || input?.method || "GET").toUpperCase();
-    if (method !== "POST" || !state.user || !state.token) return null;
+    if (method !== "POST") return null;
 
     const url = typeof input === "string" || input instanceof URL ? input.toString() : input?.url;
     if (!url || shouldSkipFetchPatch(url)) return null;
@@ -1587,10 +2235,21 @@
     const payload = parseJsonBody(bodyText);
     if (!isCommentSubmitPayload(payload)) return null;
 
-    const enriched = { ...payload, ...commentIdentityPayload(), sessionToken: state.token };
+    const hasUserSession = Boolean(state.user && state.token);
+    const hasAnonymousSession = Boolean(state.anonymousMode && !state.user);
+    const replyFields = replyContextPayload(payload);
+    if (!hasUserSession && !hasAnonymousSession && !Object.keys(replyFields).length) return null;
+
+    const enriched = {
+      ...payload,
+      ...(hasUserSession ? commentIdentityPayload() : {}),
+      ...(hasAnonymousSession ? anonymousIdentityPayload() : {}),
+      ...replyFields,
+      ...(hasUserSession ? { sessionToken: state.token } : {})
+    };
     const headers = new Headers(init.headers || input?.headers || {});
     headers.set("content-type", "application/json");
-    headers.set("x-session-token", state.token);
+    if (hasUserSession) headers.set("x-session-token", state.token);
 
     if (typeof Request !== "undefined" && input instanceof Request) {
       return {
@@ -1618,9 +2277,11 @@
         : await originalFetch(input, init);
 
       if (enriched?.body) {
+        const submittedBody = enriched.body;
+        state.replyContext = null;
         response.clone().json()
-          .then((payload) => syncSubmittedComment(enriched.body, payload))
-          .catch(() => syncSubmittedComment(enriched.body, {}));
+          .then((payload) => syncSubmittedComment(submittedBody, payload))
+          .catch(() => syncSubmittedComment(submittedBody, {}));
       }
 
       return response;
@@ -1650,18 +2311,139 @@
     });
   }
 
+  function actionLabel(node) {
+    return [
+      node?.textContent,
+      node?.getAttribute?.("aria-label"),
+      node?.getAttribute?.("title"),
+      node?.getAttribute?.("data-action"),
+      node?.className
+    ].join(" ");
+  }
+
+  function nativeReplyActionFromEvent(event) {
+    const action = event.target.closest("#twikoo .tk-action-link, #twikoo .tk-action button, #twikoo .tk-action a, #twikoo [role='button']");
+    if (!action || action.closest(".tk-submit")) return null;
+    if (!action.classList?.contains("zca-reply-pill") && !/回复|reply/i.test(actionLabel(action))) return null;
+    const comment = action.closest(".tk-comment");
+    return comment ? { action, comment } : null;
+  }
+
+  function nativeCancelActionFromEvent(event) {
+    const action = event.target.closest("#twikoo .tk-cancel, #twikoo .el-button--default, #twikoo button, #twikoo [role='button']");
+    if (!action || !action.closest(".tk-submit")) return null;
+    return /取消|关闭|cancel|close|×/i.test(actionLabel(action)) ? action : null;
+  }
+
+  function directReplyCount(comment) {
+    const replies = directChildByClass(comment, "tk-replies") || comment.querySelector(":scope > .tk-replies");
+    if (!replies) return 0;
+    return Array.from(replies.children).filter((child) => child.classList?.contains("tk-comment")).length;
+  }
+
+  function enhanceReplyActionPills() {
+    document.querySelectorAll("#twikoo .tk-comment").forEach((comment) => {
+      const actions = Array.from(comment.querySelectorAll(":scope > .tk-main .tk-action-link, :scope > .tk-main .tk-action button, :scope > .tk-main .tk-action a"));
+      const buttonActions = actions.filter((action) => action.matches("button, a, [role='button']"));
+      if (buttonActions.length >= 3) {
+        buttonActions[1].classList.add("is-zca-hidden");
+        buttonActions[buttonActions.length - 1].classList.add("zca-reply-pill");
+      }
+      actions.forEach((action, index) => {
+        const label = actionLabel(action);
+        if (/点踩|踩|dislike|down/i.test(label)) {
+          action.classList.add("is-zca-hidden");
+          return;
+        }
+        if (!action.classList.contains("zca-reply-pill") && !/回复|reply|comment/i.test(label)) return;
+        action.classList.add("zca-reply-pill");
+        const count = directReplyCount(comment);
+        if (count > 0) action.dataset.zcaReplyCount = String(count);
+        else delete action.dataset.zcaReplyCount;
+      });
+    });
+  }
+
+  function insertMentionShortcut(textarea) {
+    if (!textarea) return;
+    const current = textarea.value || "";
+    const start = textarea.selectionStart ?? current.length;
+    const end = textarea.selectionEnd ?? start;
+    const prefix = start > 0 && !/\s$/.test(current.slice(0, start)) ? " @" : "@";
+    const next = `${current.slice(0, start)}${prefix}${current.slice(end)}`;
+    const cursor = start + prefix.length;
+    textarea.value = next;
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(cursor, cursor);
+  }
+
+  function enhanceComposerToolbar() {
+    document.querySelectorAll("#twikoo .tk-submit .tk-row-actions-start").forEach((actionGroup) => {
+      if (actionGroup.querySelector(".zca-at-action, .solitude-mention-action")) return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tk-submit-action-icon zca-at-action solitude-mention-action";
+      button.setAttribute("aria-label", "插入 @");
+      button.innerHTML = `<span aria-hidden="true"><i class="solitude fas fa-at"></i></span>`;
+      button.addEventListener("click", () => {
+        const submit = button.closest(".tk-submit");
+        insertMentionShortcut(submit?.querySelector(".el-textarea__inner"));
+      });
+      const first = actionGroup.firstElementChild;
+      if (first?.nextSibling) actionGroup.insertBefore(button, first.nextSibling);
+      else actionGroup.appendChild(button);
+    });
+  }
+
+  function renderAuthUserCluster(user) {
+    if (!user) return "";
+    return `
+      <div class="zca-user-cluster">
+        <a class="zca-user zca-user-link" href="${escapeHtml(publicProfileUrl(user))}">
+          ${avatarHtml(user)}
+          <span class="zca-name">${escapeHtml(user.displayName || user.username)}</span>
+        </a>
+        <button class="zca-link-btn" type="button" data-zca-open-user-center>用户中心</button>
+        <button class="zca-link-btn" type="button" data-zca-logout>注销</button>
+      </div>
+    `;
+  }
+
+  function renderAnonymousCluster() {
+    const anon = anonymousConfig();
+    const name = state.anonymousName || pickAnonymousName();
+    const avatar = anon.avatarUrl
+      ? `<img src="${escapeHtml(anon.avatarUrl)}" alt="匿名头像" loading="lazy" />`
+      : `<span>${escapeHtml(name.slice(0, 1))}</span>`;
+    return `
+      <div class="zca-user-cluster zca-anonymous-cluster">
+        <span class="zca-user">
+          <span class="zca-avatar">${avatar}</span>
+          <span class="zca-name">${escapeHtml(name)}</span>
+        </span>
+        <button class="zca-link-btn zca-refresh-name" type="button" data-zca-random-anonymous>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.8 12a7.2 7.2 0 0 1 12-5.3L19 8.9" /><path d="M19.2 12a7.2 7.2 0 0 1-12 5.3L5 15.1" /><path d="M19 4.9v4h-4" /><path d="M5 19.1v-4h4" /></svg>
+          换一个
+        </button>
+        <button class="zca-link-btn" type="button" data-zca-logout>注销</button>
+      </div>
+    `;
+  }
+
   function updateCommentAuthUi() {
     state.mutationQueued = false;
     renderBar();
     syncTwikooProfile();
     ensureManualSwitchButton();
+    enhanceComposerToolbar();
     if (window.SolitudeAIComment && !document.querySelector("#twikoo .solitude-ai-comment")) {
-      window.SolitudeAIComment.init();
+      window.SolitudeAIComment.mount?.();
     }
-    syncCommentActionOverlay();
-    observeCommentLayout();
     enhanceCommentProfileLinks();
     hydrateCommentAvatars();
+    enhanceReplyActionPills();
   }
 
   function scheduleCommentAuthUiUpdate() {
@@ -1682,18 +2464,31 @@
         renderEmbeddedLogin("请先登录账号，再发布评论。");
         return;
       }
-      const submitControl = event.target.closest("#twikoo .tk-submit button, #twikoo .tk-submit a");
-      const submitControlLabel = `${submitControl?.textContent || ""} ${submitControl?.getAttribute?.("aria-label") || ""} ${submitControl?.title || ""}`;
-      if (/取消/.test(submitControlLabel)) {
-        setTimeout(restoreReplyComposer, 0);
+
+      const nativeReply = nativeReplyActionFromEvent(event);
+      if (nativeReply) {
+        prepareReplyContext(nativeReply.comment);
+        if (!state.user && !isManualMode()) {
+          event.preventDefault();
+          event.stopPropagation();
+          applyCommentMode();
+          renderBar();
+          renderEmbeddedLogin("请先登录账号，再回复评论。");
+        }
         return;
       }
-      const replyControl = replyControlFromEventTarget(event.target);
-      if (replyControl) {
-        const comment = replyControl.closest(".tk-comment");
-        if (comment) scheduleMoveComposerToComment(comment);
+
+      if (nativeCancelActionFromEvent(event)) {
+        state.replyContext = null;
+        scheduleCommentAuthUiUpdate();
         return;
       }
+
+      const primarySubmit = event.target.closest("#twikoo .tk-submit.zca-primary-submit");
+      if (primarySubmit && !primarySubmit.closest(".tk-comment, .tk-replies")) {
+        state.replyContext = null;
+      }
+
       const profileTarget = event.target.closest("#twikoo [data-zca-profile-url]");
       if (profileTarget) {
         window.location.href = profileTarget.dataset.zcaProfileUrl;
@@ -1703,14 +2498,30 @@
         setManualMode();
         return;
       }
+      if (event.target.closest("[data-zca-confirm-anonymous]")) {
+        setAnonymousMode();
+        return;
+      }
+      if (event.target.closest("[data-zca-random-anonymous]")) {
+        state.anonymousName = pickAnonymousName(state.anonymousName);
+        renderBar();
+        syncTwikooProfile();
+        return;
+      }
       if (event.target.closest("[data-zca-login]")) {
         state.manualMode = false;
+        state.anonymousMode = false;
+        state.anonymousName = "";
         state.authMode = "login";
         state.authStep = "email";
         removeManualSwitchButton();
         applyCommentMode();
         renderBar();
         renderEmbeddedLogin();
+        return;
+      }
+      if (event.target.closest("[data-zca-auth-options]")) {
+        renderManualWarningModal();
         return;
       }
       const authModeButton = event.target.closest("[data-zca-auth-mode]");
@@ -1729,13 +2540,15 @@
         renderUserCenterModal("profile");
         return;
       }
-      if (event.target.closest("[data-zca-open-notifications]")) {
-        renderUserCenterModal("notice");
-        return;
-      }
       const panelButton = event.target.closest("[data-zca-center-panel]");
       if (panelButton) {
         renderUserCenterModal(panelButton.dataset.zcaCenterPanel || "profile");
+        return;
+      }
+      const adminPanelButton = event.target.closest("[data-zca-admin-panel]");
+      if (adminPanelButton) {
+        state.adminPanel = adminPanelButton.dataset.zcaAdminPanel || "notice";
+        renderAdminSubPanel();
         return;
       }
       if (event.target.closest("[data-zca-mark-notifications]")) {
@@ -1753,8 +2566,121 @@
         })();
         return;
       }
+      const redeemStart = event.target.closest("[data-zca-redeem-start]");
+      if (redeemStart) {
+        renderRedeemConfirm(redeemStart.dataset.zcaRedeemStart);
+        return;
+      }
+      const redeemPhone = event.target.closest("[data-zca-redeem-phone]");
+      if (redeemPhone) {
+        renderRedeemPhone(redeemPhone.dataset.zcaRedeemPhone);
+        return;
+      }
+      if (event.target.closest("[data-zca-shop-back]")) {
+        const body = document.querySelector("[data-zca-account-body]");
+        if (body) body.innerHTML = renderShopPanel(state.user);
+        return;
+      }
       if (event.target.closest("[data-zca-admin-refresh]")) {
         loadAdminUsers();
+        return;
+      }
+      if (event.target.closest("[data-zca-redemption-refresh]")) {
+        loadRedemptions();
+        return;
+      }
+      const aiNewButton = event.target.closest("[data-zca-ai-new]");
+      if (aiNewButton) {
+        state.aiEditConfig = {};
+        state.aiEditingNew = true;
+        renderAiConfigPanel();
+        return;
+      }
+      const aiEditButton = event.target.closest("[data-zca-ai-edit]");
+      if (aiEditButton) {
+        state.aiEditConfig = (state.aiConfigs || []).find((item) => item.id === aiEditButton.dataset.zcaAiEdit) || {};
+        state.aiEditingNew = false;
+        renderAiConfigPanel();
+        return;
+      }
+      const aiCancelButton = event.target.closest("[data-zca-ai-cancel]");
+      if (aiCancelButton) {
+        state.aiEditConfig = null;
+        state.aiEditingNew = false;
+        renderAiConfigPanel();
+        return;
+      }
+      const aiDefaultButton = event.target.closest("[data-zca-ai-default]");
+      if (aiDefaultButton) {
+        aiDefaultButton.disabled = true;
+        (async () => {
+          try {
+            await api("setDefaultAiConfig", { method: "POST", body: { id: aiDefaultButton.dataset.zcaAiDefault } });
+            await loadAiConfig();
+            notify("已设为默认配置。");
+          } catch (error) {
+            aiDefaultButton.disabled = false;
+            notify(error.message, true);
+          }
+        })();
+        return;
+      }
+      const aiTestButton = event.target.closest("[data-zca-ai-test]");
+      if (aiTestButton) {
+        const original = aiTestButton.textContent;
+        aiTestButton.disabled = true;
+        aiTestButton.textContent = "测试中...";
+        (async () => {
+          try {
+            const payload = await api("testAiConfig", { method: "POST", body: { id: aiTestButton.dataset.zcaAiTest } });
+            notify(payload.ok ? `测试成功：${payload.message || ""}${payload.latencyMs ? `（${payload.latencyMs}ms）` : ""}` : `测试失败：${payload.message || ""}`, !payload.ok);
+          } catch (error) {
+            notify(error.message, true);
+          } finally {
+            aiTestButton.disabled = false;
+            aiTestButton.textContent = original;
+          }
+        })();
+        return;
+      }
+      const aiDeleteButton = event.target.closest("[data-zca-ai-delete]");
+      if (aiDeleteButton) {
+        if (!window.confirm("确定删除该 AI 配置？删除后不可恢复。")) return;
+        aiDeleteButton.disabled = true;
+        (async () => {
+          try {
+            await api("deleteAiConfig", { method: "POST", body: { id: aiDeleteButton.dataset.zcaAiDelete } });
+            await loadAiConfig();
+            notify("AI 配置已删除。");
+          } catch (error) {
+            aiDeleteButton.disabled = false;
+            notify(error.message, true);
+          }
+        })();
+        return;
+      }
+      const saveRedemption = event.target.closest("[data-zca-save-redemption]");
+      if (saveRedemption) {
+        const id = saveRedemption.dataset.zcaSaveRedemption;
+        saveRedemption.disabled = true;
+        (async () => {
+          try {
+            await api("updateRedemption", {
+              method: "POST",
+              body: {
+                id,
+                status: document.querySelector("[data-zca-redemption-status=\"" + CSS.escape(id) + "\"]")?.value,
+                note: document.querySelector("[data-zca-redemption-note=\"" + CSS.escape(id) + "\"]")?.value
+              }
+            });
+            await loadRedemptions();
+            notify("兑换记录已更新。");
+          } catch (error) {
+            notify(error.message, true);
+          } finally {
+            saveRedemption.disabled = false;
+          }
+        })();
         return;
       }
       const badgeButton = event.target.closest("[data-zca-save-badge]");
@@ -1765,7 +2691,7 @@
         const colorInput = editor?.querySelector("[data-zca-badge-color]");
         (async () => {
           try {
-            await api("updateUser", {
+            const payload = await api("updateUser", {
               method: "POST",
               body: {
                 id,
@@ -1773,8 +2699,28 @@
                 badgeColor: colorInput?.value || "",
               },
             });
+            if (payload.user?.id === state.user?.id) updateAuthorizedUser(payload.user);
             await loadAdminUsers();
             notify("身份标签已保存。");
+          } catch (error) {
+            notify(error.message, true);
+          }
+        })();
+        return;
+      }
+      const uidButton = event.target.closest("[data-zca-save-uid]");
+      if (uidButton) {
+        const id = uidButton.dataset.zcaSaveUid;
+        const input = document.querySelector("[data-zca-uid-input=\"" + CSS.escape(id) + "\"]");
+        (async () => {
+          try {
+            const payload = await api("updateUser", {
+              method: "POST",
+              body: { id, uid: input?.value.trim() || "" },
+            });
+            if (payload.user?.id === state.user?.id) updateAuthorizedUser(payload.user);
+            await loadAdminUsers();
+            notify("UID 已保存。");
           } catch (error) {
             notify(error.message, true);
           }
@@ -1790,15 +2736,17 @@
         if (!targetUser) return;
         (async () => {
           try {
+            let payload = null;
             if (roleButton) {
-              await api("updateUser", { method: "POST", body: { id, role: targetUser.role === "admin" ? "user" : "admin" } });
+              payload = await api("updateUser", { method: "POST", body: { id, role: targetUser.role === "admin" ? "user" : "admin" } });
             }
             if (statusButton) {
-              await api("updateUser", { method: "POST", body: { id, status: targetUser.status === "blocked" ? "active" : "blocked" } });
+              payload = await api("updateUser", { method: "POST", body: { id, status: targetUser.status === "blocked" ? "active" : "blocked" } });
             }
             if (deleteButton && window.confirm(`确认删除 ${targetUser.displayName || targetUser.username} 吗？`)) {
               await api("deleteUser", { method: "POST", body: { id } });
             }
+            if (payload?.user?.id === state.user?.id) updateAuthorizedUser(payload.user);
             await loadAdminUsers();
             notify("用户信息已更新。");
           } catch (error) {
@@ -1809,6 +2757,10 @@
       }
       if (event.target.closest("[data-zca-manual]")) {
         renderManualWarningModal();
+        return;
+      }
+      if (event.target.closest("[data-zca-anonymous]")) {
+        renderAnonymousWarningModal();
         return;
       }
       if (event.target.closest("[data-zca-close]") || event.target.id === "zeora-comment-auth-modal") {
@@ -1833,33 +2785,51 @@
     }, { signal, capture: true });
 
     document.addEventListener("submit", (event) => {
+      const loginForm = event.target.closest("[data-zca-login-form]");
       const loginEmailForm = event.target.closest("[data-zca-login-email-form]");
-      const loginPasswordForm = event.target.closest("[data-zca-login-password-form]");
       const registerForm = event.target.closest("[data-zca-register-form]");
       const resetForm = event.target.closest("[data-zca-reset-form]");
       const profileForm = event.target.closest("[data-zca-profile-form]");
+      const socialForm = event.target.closest("[data-zca-social-form]");
       const passwordForm = event.target.closest("[data-zca-password-form]");
       const noticeForm = event.target.closest("[data-zca-notice-form]");
       const adminNotificationForm = event.target.closest("[data-zca-admin-notification-form]");
+      const redeemForm = event.target.closest("[data-zca-redeem-form]");
+      const shopItemForm = event.target.closest("[data-zca-shop-item-form]");
+      const aiConfigForm = event.target.closest("[data-zca-ai-config-form]");
       const emailForm = event.target.closest("[data-zca-email-form]");
       const codeForm = event.target.closest("[data-zca-code-form]");
-      if (!emailForm && !codeForm && !loginEmailForm && !loginPasswordForm && !registerForm && !resetForm && !profileForm && !passwordForm && !noticeForm && !adminNotificationForm) return;
+      if (!emailForm && !codeForm && !loginForm && !loginEmailForm && !registerForm && !resetForm && !profileForm && !socialForm && !passwordForm && !noticeForm && !adminNotificationForm && !redeemForm && !shopItemForm && !aiConfigForm) return;
 
       event.preventDefault();
       const submitter = event.submitter || event.target.querySelector("button[type='submit']");
       if (emailForm) handleEmailSubmit(emailForm);
       if (codeForm) handleCodeSubmit(codeForm);
 
+      if (loginForm) {
+        submitter.disabled = true;
+        (async () => {
+          try {
+            const data = formData(loginForm);
+            state.authIdentifier = String(data.identifier || "").trim();
+            state.rememberSession = data.rememberMe === "on";
+            if (!state.authIdentifier) return;
+            const captcha = await runCaptchaChallenge();
+            const payload = await api("login", {
+              method: "POST",
+              body: { identifier: state.authIdentifier, password: data.password, captcha }
+            });
+            completeAuthorization(payload.user, payload.sessionToken);
+          } catch (error) {
+            renderEmbeddedLogin(`错误：${error.message}`);
+          }
+        })();
+      }
+
       if (loginEmailForm) {
         const data = formData(loginEmailForm);
         state.authEmail = String(data.email || "").trim().toLowerCase();
-        state.rememberSession = data.rememberMe === "on";
         if (!state.authEmail) return;
-        if (state.authMode === "login") {
-          state.authStep = "password";
-          renderEmbeddedLogin();
-          return;
-        }
         submitter.disabled = true;
         (async () => {
           try {
@@ -1874,30 +2844,14 @@
         })();
       }
 
-      if (loginPasswordForm) {
-        submitter.disabled = true;
-        (async () => {
-          try {
-            const captcha = await runCaptchaChallenge();
-            const payload = await api("login", {
-              method: "POST",
-              body: { email: state.authEmail, password: formData(loginPasswordForm).password, captcha }
-            });
-            completeAuthorization(payload.user, payload.sessionToken);
-          } catch (error) {
-            state.authStep = "password";
-            renderEmbeddedLogin(`错误：${error.message}`);
-          }
-        })();
-      }
-
       if (registerForm) {
         submitter.disabled = true;
         (async () => {
           try {
+            const captcha = await runCaptchaChallenge();
             const payload = await api("registerWithCode", {
               method: "POST",
-              body: { ...formData(registerForm), email: state.authEmail }
+              body: { ...formData(registerForm), email: state.authEmail, captcha }
             });
             completeAuthorization(payload.user, payload.sessionToken);
           } catch (error) {
@@ -1932,17 +2886,33 @@
               method: "POST",
               body: {
                 displayName: data.displayName,
+                username: data.username,
                 avatarUrl: data.avatarUrl,
                 backgroundUrl: data.backgroundUrl,
                 websiteUrl: data.websiteUrl,
-                bio: data.bio,
-                socialLinks: parseSocialLinksText(data.socialLinksText)
+                bio: data.bio
               }
             });
             updateAuthorizedUser(payload.user);
             renderUserCenterModal("profile", "资料已保存。");
           } catch (error) {
             renderUserCenterModal("profile", error.message, true);
+          }
+        })();
+      }
+
+      if (socialForm) {
+        submitter.disabled = true;
+        (async () => {
+          try {
+            const payload = await api("updateProfile", {
+              method: "POST",
+              body: { socialLinks: collectZcaSocialLinks(socialForm) }
+            });
+            updateAuthorizedUser(payload.user);
+            renderUserCenterModal("profile", "社交链接已保存。");
+          } catch (error) {
+            renderUserCenterModal("profileSocial", error.message, true);
           }
         })();
       }
@@ -2006,6 +2976,88 @@
           }
         })();
       }
+
+      if (shopItemForm) {
+        submitter.disabled = true;
+        (async () => {
+          try {
+            const data = formData(shopItemForm);
+            await api("updateShopItem", {
+              method: "POST",
+              body: {
+                key: data.key,
+                name: data.name,
+                description: data.description,
+                price: data.price,
+                stock: data.stock,
+                imageUrl: data.imageUrl,
+                enabled: data.enabled === "on"
+              }
+            });
+            await loadShopCatalog(true);
+            renderShopAdminPanel();
+            notify("商品已保存。");
+          } catch (error) {
+            notify(error.message, true);
+          }
+        })();
+      }
+
+      if (aiConfigForm) {
+        submitter.disabled = true;
+        (async () => {
+          try {
+            const data = formData(aiConfigForm);
+            const isNew = state.aiEditingNew;
+            const payload = await api(isNew ? "createAiConfig" : "aiConfig", {
+              method: "POST",
+              body: {
+                id: data.id || undefined,
+                name: data.name,
+                enabled: data.enabled === "on",
+                requireLogin: data.requireLogin === "on",
+                provider: data.provider,
+                apiBaseUrl: data.apiBaseUrl,
+                model: data.model,
+                apiKey: data.apiKey,
+                temperature: data.temperature,
+                maxTokens: data.maxTokens,
+                systemPrompt: data.systemPrompt,
+                isDefault: data.isDefault === "on",
+                clearApiKey: data.clearApiKey === "on"
+              }
+            });
+            state.aiConfigs = payload.aiConfigs || [];
+            state.aiEditConfig = null;
+            state.aiEditingNew = false;
+            renderAiConfigPanel();
+            notify(isNew ? "AI 配置已创建。" : "AI 配置已保存。");
+          } catch (error) {
+            notify(error.message, true);
+          }
+        })();
+      }
+
+      if (redeemForm) {
+        submitter.disabled = true;
+        (async () => {
+          try {
+            const data = formData(redeemForm);
+            const payload = await api("redeemReward", {
+              method: "POST",
+              body: {
+                reward: redeemForm.dataset.zcaRedeemForm,
+                phone: data.phone,
+                note: data.note
+              }
+            });
+            updateAuthorizedUser(payload.user);
+            renderUserCenterModal("shop", `${payload.redemption?.itemLabel || "权益"}兑换申请已提交，预计 10 个工作日内到账。`);
+          } catch (error) {
+            renderUserCenterModal("shop", error.message, true);
+          }
+        })();
+      }
     }, { signal });
 
     document.addEventListener("input", (event) => {
@@ -2017,6 +3069,17 @@
       if (event.target.matches("[data-zca-profile-form] input[name='avatarUrl']")) {
         const preview = document.querySelector("[data-zca-avatar-preview]");
         if (preview) preview.innerHTML = avatarHtml({ ...state.user, avatarUrl: event.target.value.trim() });
+      }
+      const shopImageInput = event.target.closest("[data-zca-shop-image-input]");
+      if (shopImageInput) {
+        const key = shopImageInput.dataset.zcaShopImageInput;
+        const preview = document.querySelector("[data-zca-shop-image-preview=\"" + CSS.escape(key) + "\"]");
+        if (!preview) return;
+        const value = shopImageInput.value.trim();
+        preview.classList.toggle("is-empty", !value);
+        preview.innerHTML = value
+          ? `<img src="${escapeHtml(value)}" alt="商品预览图" loading="lazy" />`
+          : key === "new" ? "+" : "商";
       }
     }, { signal });
 
@@ -2075,13 +3138,14 @@
   function mount() {
     if (!document.querySelector("#post-comment, #twikoo-wrap, #twikoo")) return;
     updateCommentAuthUi();
+    clearTimeout(state.retryTimer);
+    state.retryTimer = null;
 
-    if (!state.observer) {
-      state.observer = new MutationObserver(scheduleCommentAuthUiUpdate);
-      state.observer.observe(document.querySelector("#post-comment") || document.body, {
-        childList: true,
-        subtree: true
-      });
+    if (!document.querySelector("#twikoo .tk-submit") && state.retryCount < 24) {
+      state.retryCount += 1;
+      state.retryTimer = setTimeout(mount, 250);
+    } else {
+      state.retryCount = 0;
     }
   }
 
@@ -2096,10 +3160,15 @@
   }
 
   document.addEventListener("DOMContentLoaded", init, { signal });
+  window.addEventListener("twikoo:loaded", () => {
+    state.submitEl = null;
+    scheduleCommentAuthUiUpdate();
+  }, { signal });
   document.addEventListener("pjax:complete", () => {
     state.mounted = false;
-    state.observer?.disconnect();
-    state.observer = null;
+    clearTimeout(state.retryTimer);
+    state.retryTimer = null;
+    state.retryCount = 0;
     init();
   }, { signal });
   if (document.readyState !== "loading") init();

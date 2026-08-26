@@ -15,6 +15,16 @@
     }
   }
 
+  function isKnownDeadEndpoint(value) {
+    if (!value) return false;
+    try {
+      const url = new URL(value, window.location.origin);
+      return /^https?:\/\/ai\.zeora\.qzz\.io$/i.test(url.origin);
+    } catch (error) {
+      return false;
+    }
+  }
+
   function readConfigs() {
     return Array.from(
       document.querySelectorAll(".solitude-hot-posts-data, #solitude-hot-posts-data")
@@ -22,6 +32,7 @@
       try {
         const config = JSON.parse(element.textContent || "{}");
         config.endpoint = String(config.endpoint || "").replace(/\/$/, "");
+        if (isKnownDeadEndpoint(config.endpoint)) config.endpoint = "";
         config.limit = Number(config.limit) || 5;
         config.posts = Array.isArray(config.posts) ? config.posts : [];
         config.list =

@@ -200,6 +200,7 @@
       return time.just;
     },
     loadComment: (dom, callback) => {
+      if (!dom) return;
       const observerItem =
         "IntersectionObserver" in window
           ? new IntersectionObserver(

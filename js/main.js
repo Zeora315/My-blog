@@ -345,14 +345,9 @@ const initHomeCenter = () => {
 
   const banners = [...container.querySelectorAll(".home-center-banner-item")];
   const items = [...container.querySelectorAll(".home-center-item")];
-  const indicators = [
-    ...container.querySelectorAll(".home-center-indicator"),
-  ];
   const banner = container.querySelector(".home-center-banner");
   const titleLink = container.querySelector(".home-center-title-link");
   const titleTag = container.querySelector(".home-center-title-tag span");
-  const mobilePrevButton = container.querySelector(".home-center-mobile-arrow-prev");
-  const mobileNextButton = container.querySelector(".home-center-mobile-arrow-next");
   const categoryBar = document.getElementById("category-bar");
   const prefersReducedMotion = window.matchMedia?.(
     "(prefers-reduced-motion: reduce)"
@@ -508,11 +503,6 @@ const initHomeCenter = () => {
       item.classList.toggle("active", isActive);
       item.setAttribute("aria-current", String(isActive));
     });
-    indicators.forEach((indicator, indicatorIndex) => {
-      const isActive = indicatorIndex === index;
-      indicator.classList.toggle("active", isActive);
-      indicator.setAttribute("aria-current", String(isActive));
-    });
     const selected = banners[index];
     const selectedStyle = getComputedStyle(selected);
     const color = selectedStyle.getPropertyValue("--home-center-theme").trim();
@@ -599,23 +589,6 @@ const initHomeCenter = () => {
         navigate(item.dataset.link, event);
       }
     });
-  });
-  indicators.forEach((indicator, index) => {
-    indicator.addEventListener("click", (event) => {
-      event.preventDefault();
-      goTo(index);
-      queueAutoplay();
-    });
-  });
-  mobilePrevButton?.addEventListener("click", (event) => {
-    event.preventDefault();
-    goTo(activeIndex - 1);
-    queueAutoplay();
-  });
-  mobileNextButton?.addEventListener("click", (event) => {
-    event.preventDefault();
-    goTo(activeIndex + 1);
-    queueAutoplay();
   });
   container.addEventListener("mouseenter", stopAutoplay);
   container.addEventListener("mouseleave", queueAutoplay);
@@ -1262,35 +1235,6 @@ const actions = {
       if (activeItem) {
         activeItem.classList.add("select");
       }
-    }
-  },
-  scrollCategoryBarToRight() {
-    const scrollBar = document.getElementById("category-bar-items");
-    const nextElement = document.getElementById("category-bar-next");
-    if (scrollBar) {
-      const isScrollBarAtEnd = () =>
-        scrollBar.scrollLeft + scrollBar.clientWidth >=
-        scrollBar.scrollWidth - 8;
-      const scroll = () => {
-        scrollBar.scroll({
-          left: isScrollBarAtEnd() ? 0 : scrollBar.clientWidth,
-          behavior: "smooth",
-        });
-      };
-      if (scrollBar.dataset.solitudeScrollBound !== "true") {
-        scrollBar.dataset.solitudeScrollBound = "true";
-        lifecycle.listen(scrollBar, "scroll", () => {
-          clearTimeout(this.timeoutId);
-          this.timeoutId = setTimeout(() => {
-            if (nextElement) {
-              nextElement.style.transform = isScrollBarAtEnd()
-                ? "rotate(180deg)"
-                : "";
-            }
-          }, 150);
-        }, { passive: true });
-      }
-      scroll();
     }
   },
   openAllTags() {

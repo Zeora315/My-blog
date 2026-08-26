@@ -1,36 +1,49 @@
 (function () {
+  window.__solitudeAICommentCleanup?.();
+
+  const controller = new AbortController();
+  const { signal } = controller;
   const DEFAULT_CONFIG = {
     enable: false,
-    endpoint: "/api/ai-comment",
-    model: "deepseek-chat",
-    button_text: "AI",
+    endpoint: "/api/demo?action=aiComment",
+    model: "deepseek-mimo",
+    button_text: "AI评论",
+    polish_text: "AI润色",
     placeholder: "正在让 AI 阅读文章并生成评论..."
   };
 
   const AI_ASSISTED_MARKER = "\u2063\u200B\u2062\u200C\u2063";
-  const SEND_PROGRESS_DURATION = 22000;
-  const SEND_PROGRESS_TIMEOUT = 70000;
 
   const state = {
-    observer: null,
     observerQueued: false,
+    retryTimer: null,
+    retryCount: 0,
     pending: false,
     typingTimer: null,
-    aiDrafts: new WeakMap(),
-    submitProgress: new WeakMap()
+    aiDrafts: new WeakMap()
   };
+
+  window.__solitudeAICommentCleanup = () => {
+    controller.abort();
+    clearTimeout(state.retryTimer);
+    state.retryTimer = null;
+    clearInterval(state.typingTimer);
+    state.typingTimer = null;
+  };
+  document.addEventListener("solitude:beforeNavigate", window.__solitudeAICommentCleanup, { once: true, signal });
 
   function getConfig() {
     return Object.assign({}, DEFAULT_CONFIG, window.SOLITUDE_AI_COMMENT || {});
   }
 
   function getTextarea() {
-    return document.querySelector("#twikoo .el-textarea__inner");
+    const submit = getCommentComposerSubmits()[0];
+    return (submit && submit.querySelector(".tk-input .el-textarea__inner, .el-textarea__inner")) || null;
   }
 
   function getButtonTextarea(button) {
-    const submit = button.closest(".tk-submit") || document.querySelector("#twikoo .tk-submit");
-    return (submit && submit.querySelector(".el-textarea__inner")) || getTextarea();
+    const submit = getCommentComposerSubmit(button.closest(".tk-submit")) || getCommentComposerSubmits()[0];
+    return (submit && submit.querySelector(".tk-input .el-textarea__inner, .el-textarea__inner")) || getTextarea();
   }
 
   function stripAiMarker(value) {
@@ -82,6 +95,24 @@
 
   function getExistingComment(textarea) {
     return stripAiMarker(textarea.value).trim();
+  }
+
+  function getSessionToken() {
+    const keys = ["zeoraTwikooUserSession", "twikooUserCenterSessionToken"];
+    for (const storage of [localStorage, sessionStorage]) {
+      for (const key of keys) {
+        const raw = storage.getItem(key);
+        if (!raw) continue;
+        if (key === "twikooUserCenterSessionToken") return raw;
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed?.sessionToken) return parsed.sessionToken;
+        } catch (error) {
+          // Ignore unrelated storage content.
+        }
+      }
+    }
+    return "";
   }
 
   function compactText(value) {
@@ -154,14 +185,47 @@
 
     const text = await response.text().catch(() => "");
     if (response.status === 404) {
-      return "AI 接口未部署：当前网页找不到 /api/ai-comment，请把 endpoint 改成已部署的 Worker/API 地址";
+      return "AI 评论接口未部署或路径不正确，请在用户中心管理页检查 AI 配置";
     }
 
     if (text && /<!doctype html|<html/i.test(text)) {
-      return "AI 接口返回了网页而不是 JSON，请检查 endpoint 是否指向真正的 API 服务";
+      return "AI 接口返回了网页而不是 JSON，请检查用户中心管理页里的接口地址";
     }
 
     return text.slice(0, 160);
+  }
+
+  function endpointCandidates(config) {
+    const primary = String(config.endpoint || DEFAULT_CONFIG.endpoint || "").trim() || DEFAULT_CONFIG.endpoint;
+    const candidates = [];
+    const knownDeadEndpoint = (value) => {
+      try {
+        const url = new URL(value, window.location.origin);
+        return /^https?:\/\/ai\.zeora\.qzz\.io$/i.test(url.origin);
+      } catch (error) {
+        return false;
+      }
+    };
+    const push = (value) => {
+      const endpoint = String(value || "").trim();
+      if (endpoint && !knownDeadEndpoint(endpoint) && !candidates.includes(endpoint)) candidates.push(endpoint);
+    };
+
+    push(primary);
+    push(config.fallback_endpoint);
+    push("/api/ai-comment");
+    return candidates;
+  }
+
+  function networkErrorMessage(endpoint) {
+    let target = endpoint;
+    try {
+      const url = new URL(endpoint, window.location.origin);
+      target = url.origin + url.pathname;
+    } catch (error) {
+      target = endpoint;
+    }
+    return `AI 接口连接失败：${target} 没有响应，请检查 Twikoo 后端和用户中心管理页里的 AI 配置。`;
   }
 
   function getActionButtons() {
@@ -178,20 +242,26 @@
     });
   }
 
-  async function requestAiComment(button) {
+  async function requestAiComment(button, mode = "generate") {
     const textarea = getButtonTextarea(button);
     const config = getConfig();
     const title = getPageTitle();
     const content = getArticleText();
     const draft = textarea ? getExistingComment(textarea) : "";
+    const actionMode = mode === "polish" ? "polish" : "generate";
 
     if (!textarea) {
       notify("没有找到评论输入框");
       return;
     }
 
-    if (!content) {
+    if (actionMode === "generate" && !content) {
       notify("没有读取到文章内容");
+      return;
+    }
+
+    if (actionMode === "polish" && !draft) {
+      notify("请先写一点内容，再使用 AI 润色");
       return;
     }
 
@@ -201,39 +271,57 @@
     button.classList.add("is-loading");
 
     const oldValue = textarea.value;
-    setTextareaValue(textarea, "");
+    if (actionMode === "generate") setTextareaValue(textarea, "");
 
     try {
-      const response = await fetch(config.endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          title,
-          content,
-          draft,
-          path: window.location.pathname,
-          model: config.model
-        })
+      let data = null;
+      let lastError = null;
+      const requestBody = JSON.stringify({
+        title,
+        content,
+        draft,
+        mode: actionMode,
+        path: window.location.pathname,
+        model: config.model
       });
 
-      if (!response.ok) {
-        const detail = await getErrorMessage(response);
-        throw new Error(detail || `AI 评论生成失败 HTTP ${response.status}`);
+      for (const endpoint of endpointCandidates(config)) {
+        try {
+          const headers = { "Content-Type": "application/json" };
+          const token = getSessionToken();
+          if (token) headers["x-session-token"] = token;
+
+          const response = await fetch(endpoint, {
+            method: "POST",
+            headers,
+            body: requestBody
+          });
+
+          if (!response.ok) {
+            const detail = await getErrorMessage(response);
+            throw new Error(detail || `AI 评论${actionMode === "polish" ? "润色" : "生成"}失败 HTTP ${response.status}`);
+          }
+
+          data = await response.json().catch(() => ({}));
+          break;
+        } catch (error) {
+          lastError = /Failed to fetch|NetworkError|Load failed/i.test(error.message || "")
+            ? new Error(networkErrorMessage(endpoint))
+            : error;
+        }
       }
 
-      const data = await response.json().catch(() => ({}));
+      if (!data && lastError) throw lastError;
       if (!data.comment) throw new Error("AI 接口没有返回内容");
 
       button.classList.remove("is-loading");
       button.classList.add("is-typing");
       await typeTextareaValue(textarea, data.comment || "");
       rememberAiDraft(textarea, data.comment || "");
-      notify("AI 评论已填入评论框");
+      notify(actionMode === "polish" ? "AI 润色已填入评论框" : "AI 评论已填入评论框");
     } catch (error) {
       setTextareaValue(textarea, oldValue);
-      notify(error.message || "AI 评论生成失败");
+      notify(error.message || (actionMode === "polish" ? "AI 润色失败" : "AI 评论生成失败"));
     } finally {
       clearInterval(state.typingTimer);
       state.typingTimer = null;
@@ -244,36 +332,156 @@
   }
 
   const icons = {
-    comment: `
-      <svg viewBox="0 0 24 24" focusable="false">
-        <path d="M4.5 12a7.5 7.5 0 1 1 4.1 6.7L5 19.6l1-3.3A7.4 7.4 0 0 1 4.5 12Z" />
-        <path d="M17 3.5l.9 2.4 2.4.9-2.4.9-.9 2.4-.9-2.4-2.4-.9 2.4-.9.9-2.4Z" />
-      </svg>
-    `,
+    comment: '<i class="solitude fas fa-robot" aria-hidden="true"></i>',
+    polish: '<i class="solitude fas fa-pen" aria-hidden="true"></i>',
+    mention: '<i class="solitude fas fa-at" aria-hidden="true"></i>'
   };
 
-  function createButton() {
+  const COMPOSER_EXCLUDE_SELECTOR = [
+    ".tk-admin-container",
+    ".tk-admin",
+    ".tk-login",
+    ".tk-panel",
+    ".zca-modal-root",
+    ".zca-modal-card",
+    ".uc-modal-root",
+    ".uc-modal-card"
+  ].join(",");
+
+  function getCommentComposerSubmit(submit) {
+    if (!submit || !submit.matches?.("#twikoo .tk-submit")) return null;
+    if (submit.closest(COMPOSER_EXCLUDE_SELECTOR)) return null;
+    if (!submit.querySelector(".tk-row.actions .tk-row-actions-start")) return null;
+    if (!submit.querySelector(".tk-input .el-textarea__inner, .el-textarea__inner")) return null;
+    return submit;
+  }
+
+  function getCommentComposerSubmits() {
+    return Array.from(document.querySelectorAll("#twikoo .tk-submit"))
+      .map(getCommentComposerSubmit)
+      .filter(Boolean);
+  }
+
+  function markCommentComposer(submit) {
+    const composer = getCommentComposerSubmit(submit);
+    if (!composer) return null;
+    composer.classList.add("solitude-comment-editor");
+    return composer;
+  }
+
+  function createButton(mode = "generate") {
     const config = getConfig();
+    const isPolish = mode === "polish";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "tk-submit-action-icon solitude-ai-action solitude-ai-comment";
-    button.setAttribute("aria-label", "AI 生成评论");
+    button.className = `tk-submit-action-icon solitude-ai-action solitude-ai-${isPolish ? "polish" : "comment"}`;
+    button.dataset.solitudeAiMode = isPolish ? "polish" : "generate";
+    button.setAttribute("aria-label", isPolish ? "AI 润色评论" : "AI 生成评论");
     button.setAttribute("aria-busy", "false");
     button.innerHTML = `
-      <span class="solitude-ai-action-icon" aria-hidden="true">${icons.comment}</span>
-      <span class="solitude-ai-action-orb" aria-hidden="true"></span>
-      <span class="solitude-ai-action-label">${escapeHtml(config.button_text || "AI生成")}</span>
+      <span class="solitude-ai-action-icon" aria-hidden="true">${isPolish ? icons.polish : icons.comment}</span>
+      <span class="solitude-ai-action-label">${escapeHtml(isPolish ? (config.polish_text || "AI润色") : (config.button_text || "AI评论"))}</span>
       <span class="solitude-ai-action-status" aria-hidden="true"></span>
     `;
-    button.addEventListener("click", () => requestAiComment(button));
+    button.addEventListener("click", () => requestAiComment(button, button.dataset.solitudeAiMode === "polish" ? "polish" : "generate"));
     return button;
   }
 
+  function insertMentionShortcut(textarea) {
+    if (!textarea) return;
+    const current = textarea.value || "";
+    const start = textarea.selectionStart ?? current.length;
+    const end = textarea.selectionEnd ?? start;
+    const prefix = start > 0 && !/\s$/.test(current.slice(0, start)) ? " @" : "@";
+    const next = `${current.slice(0, start)}${prefix}${current.slice(end)}`;
+    textarea.value = next;
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(start + prefix.length, start + prefix.length);
+  }
+
+  function createMentionButton() {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tk-submit-action-icon zca-at-action solitude-mention-action";
+    button.setAttribute("aria-label", "插入 @");
+    button.innerHTML = `<span aria-hidden="true">${icons.mention}</span>`;
+    button.addEventListener("click", () => {
+      const submit = button.closest(".tk-submit");
+      insertMentionShortcut(submit?.querySelector(".el-textarea__inner") || getTextarea());
+    });
+    return button;
+  }
+
+  function mountMentionButton(actionGroup) {
+    if (actionGroup.querySelector(".solitude-mention-action, .zca-at-action")) return;
+    const button = createMentionButton();
+    const first = actionGroup.firstElementChild;
+    if (first?.nextSibling) actionGroup.insertBefore(button, first.nextSibling);
+    else actionGroup.appendChild(button);
+  }
+
   function normalizeActionBar(actionGroup) {
-    actionGroup.querySelectorAll("[title]").forEach(element => {
+    Array.from(actionGroup.childNodes).forEach(node => {
+      if (node.nodeType === Node.TEXT_NODE && !node.nodeValue.trim()) node.remove();
+    });
+
+    Array.from(actionGroup.children).forEach(element => {
+      if (!element.hasAttribute("title")) return;
       if (!element.getAttribute("aria-label")) element.setAttribute("aria-label", element.getAttribute("title"));
       element.removeAttribute("title");
     });
+  }
+
+  function normalizeOwoTitle(value) {
+    const label = String(value || "").trim();
+    if (!label) return "";
+    return label.replace(/^:+|:+$/g, "").trim();
+  }
+
+  function preserveOwoShortcodeTitles(actionGroup) {
+    actionGroup.querySelectorAll(".OwO-item").forEach(item => {
+      if (item.getAttribute("title")) return;
+      const title = normalizeOwoTitle(item.getAttribute("aria-label"));
+      if (title) item.setAttribute("title", title);
+    });
+  }
+
+  function openOwoWhenReady(owo) {
+    if (!owo || owo.querySelector(".OwO-body")) return;
+    let attempts = 0;
+    owo.classList.add("solitude-owo-pending");
+
+    const retry = () => {
+      const logo = owo.querySelector(".OwO-logo");
+      if (logo) {
+        owo.classList.remove("solitude-owo-pending");
+        logo.click();
+        preserveOwoShortcodeTitles(owo);
+        return;
+      }
+
+      attempts += 1;
+      if (attempts < 16) {
+        setTimeout(retry, 120);
+      } else {
+        owo.classList.remove("solitude-owo-pending");
+        notify("表情包还在加载，请稍后再点一次");
+      }
+    };
+
+    setTimeout(retry, 0);
+  }
+
+  function bindOwoPendingOpen(actionGroup) {
+    if (actionGroup.dataset.solitudeOwoPendingBound === "true") return;
+    actionGroup.dataset.solitudeOwoPendingBound = "true";
+    actionGroup.addEventListener("click", event => {
+      const owo = event.target.closest(".OwO");
+      if (!owo || owo.querySelector(".OwO-body")) return;
+      openOwoWhenReady(owo);
+    }, true);
   }
 
   function markTextareaIfAiAssisted(textarea) {
@@ -300,13 +508,16 @@
       const submitButton = event.target.closest("#twikoo .tk-submit .el-button--primary, #twikoo .tk-submit button[type='submit']");
       if (!submitButton) return null;
 
-      const submit = submitButton.closest(".tk-submit");
-      const textarea = (submit && submit.querySelector(".el-textarea__inner")) || getTextarea();
+      const submit = getCommentComposerSubmit(submitButton.closest(".tk-submit"));
+      if (!submit) return null;
+
+      const textarea = submit.querySelector(".tk-input .el-textarea__inner, .el-textarea__inner") || getTextarea();
       return { button: submitButton, submit, textarea };
     }
 
     if (event.type === "keyup" && (event.ctrlKey || event.metaKey) && event.target.matches("#twikoo .el-textarea__inner")) {
-      const submit = event.target.closest(".tk-submit");
+      const submit = getCommentComposerSubmit(event.target.closest(".tk-submit"));
+      if (!submit) return null;
       return { button: getSubmitButton(submit), submit, textarea: event.target };
     }
 
@@ -318,110 +529,11 @@
     if (!context) return;
 
     markTextareaIfAiAssisted(context.textarea);
-    startSubmitProgress(context);
-  }
-
-  function isSubmitButtonDisabled(button) {
-    return !button || button.disabled || button.classList.contains("is-disabled") || button.getAttribute("disabled") !== null;
-  }
-
-  function isSubmitButtonBusy(button) {
-    return !!button && (button.disabled || button.classList.contains("is-loading") || button.getAttribute("aria-busy") === "true");
-  }
-
-  function setSubmitProgress(button, progress) {
-    const clamped = Math.max(0, Math.min(1, progress));
-    button.style.setProperty("--solitude-send-progress", `${Math.round(clamped * 100)}%`);
-  }
-
-  function attachSubmitProgress(entry) {
-    const nextButton = getSubmitButton(entry.submit) || entry.button;
-    if (!nextButton) return null;
-
-    if (nextButton !== entry.button) {
-      entry.button.classList.remove("solitude-submit-loading", "solitude-submit-complete");
-      entry.button.style.removeProperty("--solitude-send-progress");
-      state.submitProgress.delete(entry.button);
-      entry.button = nextButton;
-      state.submitProgress.set(nextButton, entry);
-    }
-
-    entry.button.classList.add("solitude-submit-loading");
-    if (entry.submit) entry.submit.classList.add("solitude-submit-loading-wrap");
-    return entry.button;
-  }
-
-  function finishSubmitProgress(button, complete) {
-    const entry = state.submitProgress.get(button);
-    if (!entry || entry.finishing) return;
-
-    entry.finishing = true;
-    cancelAnimationFrame(entry.raf);
-    clearInterval(entry.monitor);
-
-    button = attachSubmitProgress(entry) || button;
-
-    if (complete) {
-      setSubmitProgress(button, 1);
-      button.classList.add("solitude-submit-complete");
-    } else {
-      setSubmitProgress(button, 0);
-    }
-
-    window.setTimeout(() => {
-      button.classList.remove("solitude-submit-loading", "solitude-submit-complete");
-      button.style.removeProperty("--solitude-send-progress");
-      if (entry.submit) entry.submit.classList.remove("solitude-submit-loading-wrap");
-      state.submitProgress.delete(button);
-    }, complete ? 420 : 120);
-  }
-
-  function startSubmitProgress(context) {
-    const { button, submit, textarea } = context;
-    if (!button || !textarea || isSubmitButtonDisabled(button) || !stripAiMarker(textarea.value).trim()) return;
-    if (state.submitProgress.has(button)) return;
-
-    const startedAt = performance.now();
-    const entry = {
-      button,
-      submit,
-      textarea,
-      startedAt,
-      sawBusy: false,
-      finishing: false,
-      progress: 0,
-      raf: 0,
-      monitor: 0
-    };
-
-    state.submitProgress.set(button, entry);
-    attachSubmitProgress(entry);
-
-    const draw = () => {
-      const elapsed = performance.now() - startedAt;
-      entry.progress = Math.min(.96, elapsed / SEND_PROGRESS_DURATION);
-      const activeButton = attachSubmitProgress(entry);
-      if (activeButton) setSubmitProgress(activeButton, entry.progress);
-      entry.raf = requestAnimationFrame(draw);
-    };
-
-    draw();
-
-    entry.monitor = window.setInterval(() => {
-      const elapsed = performance.now() - startedAt;
-      const activeButton = attachSubmitProgress(entry) || entry.button;
-      const isBusy = isSubmitButtonBusy(activeButton);
-      const isCleared = !stripAiMarker(textarea.value).trim();
-
-      if (isBusy) entry.sawBusy = true;
-      if ((entry.sawBusy && !isBusy) || isCleared || elapsed > SEND_PROGRESS_TIMEOUT) {
-        finishSubmitProgress(activeButton, true);
-      }
-    }, 180);
   }
 
   function handleTextareaInput(event) {
     if (!event.target.matches("#twikoo .el-textarea__inner")) return;
+    if (!getCommentComposerSubmit(event.target.closest(".tk-submit"))) return;
     if (event.isTrusted && event.target.value.includes(AI_ASSISTED_MARKER)) {
       const cursor = event.target.selectionStart;
       setTextareaValue(event.target, stripAiMarker(event.target.value));
@@ -497,48 +609,50 @@
 
   function mountButton() {
     const config = getConfig();
-    if (!config.enable) return;
-
     const textarea = getTextarea();
-    if (!textarea) return;
+    if (!textarea) return false;
 
-    // Twikoo's action bar where emoji and image icons are located
-    const actionGroup = document.querySelector("#twikoo .tk-row-actions-start");
-    if (actionGroup) {
+    document.querySelectorAll("#twikoo .tk-submit .tk-row-actions-start").forEach(actionGroup => {
+      const submit = markCommentComposer(actionGroup.closest(".tk-submit"));
+      if (!submit) return;
       normalizeActionBar(actionGroup);
-      if (!actionGroup.querySelector(".solitude-ai-comment")) actionGroup.appendChild(createButton());
-    }
+      preserveOwoShortcodeTitles(actionGroup);
+      bindOwoPendingOpen(actionGroup);
+      mountMentionButton(actionGroup);
+      if (config.enable && !actionGroup.querySelector(".solitude-ai-comment")) actionGroup.appendChild(createButton("generate"));
+      if (config.enable && !actionGroup.querySelector(".solitude-ai-polish")) actionGroup.appendChild(createButton("polish"));
+    });
 
-    bindSubmitMarker();
+    if (config.enable) bindSubmitMarker();
     renderAiBadges();
+    return true;
   }
 
-  function scheduleMountButton() {
+  function scheduleMountButton(retry = true) {
     if (state.observerQueued) return;
     state.observerQueued = true;
     requestAnimationFrame(() => {
       state.observerQueued = false;
-      mountButton();
+      const mounted = mountButton();
+      clearTimeout(state.retryTimer);
+      state.retryTimer = null;
+      if (!mounted && retry && state.retryCount < 24) {
+        state.retryCount += 1;
+        state.retryTimer = setTimeout(() => scheduleMountButton(true), 250);
+      } else if (mounted) {
+        state.retryCount = 0;
+      }
     });
   }
 
   function init() {
-    const config = getConfig();
-    if (!config.enable) return;
-
-    mountButton();
-
-    if (state.observer) state.observer.disconnect();
-    state.observer = new MutationObserver(scheduleMountButton);
-    state.observer.observe(document.getElementById("twikoo-wrap") || document.body, {
-      childList: true,
-      subtree: true
-    });
+    scheduleMountButton(true);
   }
 
-  window.SolitudeAIComment = { init };
+  window.SolitudeAIComment = { init, mount: () => scheduleMountButton(false) };
 
-  document.addEventListener("DOMContentLoaded", init);
-  document.addEventListener("pjax:complete", init);
+  document.addEventListener("DOMContentLoaded", init, { signal });
+  document.addEventListener("pjax:complete", init, { signal });
+  window.addEventListener("twikoo:loaded", () => scheduleMountButton(false), { signal });
   if (document.readyState !== "loading") init();
 })();
