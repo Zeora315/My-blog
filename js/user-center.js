@@ -40,6 +40,8 @@
     users: [],
     shopItems: [],
     redemptions: [],
+    notifications: [],
+    unread: 0,
     authMode: 'login',
     authEmail: '',
     captcha: { enabled: false, provider: '' },
@@ -257,7 +259,7 @@
   function pointsMeta(user, meta = levelMeta(user)) {
     const earned = Number.isFinite(Number(user?.commentPointsEarned))
       ? Math.max(0, Math.floor(Number(user.commentPointsEarned)))
-      : Math.floor(meta.level / 10);
+      : Math.max(0, Math.floor(Number(meta.level) || 1) - 1);
     const spent = Math.max(0, Math.floor(Number(user?.shopSpentPoints) || 0));
     const available = Number.isFinite(Number(user?.commentPoints))
       ? Math.max(0, Math.floor(Number(user.commentPoints)))
@@ -295,6 +297,12 @@
     return '待处理';
   }
 
+  function typeLabel(type) {
+    if (type === 'friend') return '友链';
+    if (type === 'reply' || type === 'comment') return '评论';
+    return '系统';
+  }
+
   function socialLinks(user) {
     return Array.isArray(user?.socialLinks)
       ? user.socialLinks
@@ -320,7 +328,7 @@
       <p>距离 Lv.${escapeHtml(meta.nextLevel)} 还需 ${escapeHtml(meta.toNext)} 点经验。</p>
       <div class="uc-point-row">
         <span>可用积分 <strong>${escapeHtml(points.available)}</strong></span>
-        <small>每 10 级 +1，兑换消耗积分</small>
+        <small>每升 1 级 +1，兑换消耗积分</small>
       </div>
     `;
   }
@@ -670,7 +678,16 @@
   function formatDate(value) {
     if (!value) return '未知';
     const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '未知';
     return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+  }
+
+  function formatDateTime(value) {
+    if (!value) return '刚刚';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '刚刚';
+    const pad = (number) => String(number).padStart(2, '0');
+    return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   }
 
   function updateShell() {
@@ -878,12 +895,15 @@
       <form id="socialLinksForm" class="uc-form uc-social-panel">
         <div class="uc-panel-head">
           <div>
-            <strong>个人资料</strong>
-            <small>编辑社交链接，填写主页网址并调整展示顺序。</small>
+            <strong>社交资料</strong>
+            <small>编辑社交资料，填写主页网址并调整展示顺序。</small>
           </div>
-          <button class="uc-ghost-btn" type="button" data-panel="profile">返回</button>
         </div>
         <div class="uc-social-editor" data-social-editor>
+          <div class="uc-social-section-head">
+            <strong>已有的社交资料</strong>
+            <small>可调整顺序，也可以继续新增。</small>
+          </div>
           <div class="uc-social-list-editor" data-social-list></div>
           <div class="uc-social-footer">
             <div class="uc-social-add">
@@ -933,7 +953,7 @@
         <div class="uc-shop-balance">
           <span>可用积分</span>
           <strong>${escapeHtml(points.available)}</strong>
-          <small>评论等级每升 10 级获得 1 积分。</small>
+          <small>评论等级每升 1 级获得 1 积分。</small>
         </div>
         <div class="uc-shop-grid">
           ${items.map((item) => `
@@ -981,7 +1001,6 @@
         <p>确认后需要填写手机号，提交成功后预计 10 个工作日内到账。</p>
         <div class="uc-form-actions">
           <button class="uc-primary-btn" type="button" data-redeem-phone="${escapeHtml(item.key)}">确认兑换</button>
-          <button class="uc-ghost-btn" type="button" data-shop-back>返回商城</button>
         </div>
       </div>
     `, { backShop: true });
@@ -1010,7 +1029,6 @@
         </label>
         <div class="uc-form-actions">
           <button class="uc-primary-btn" type="submit">提交兑换</button>
-          <button class="uc-ghost-btn" type="button" data-redeem-start="${escapeHtml(item.key)}">上一步</button>
         </div>
       </form>
     `, { backRedeem: item.key });
@@ -1070,7 +1088,7 @@
           <button id="logoutBtn" class="uc-ghost-btn" type="button">退出当前账号</button>
         </div>
       </div>
-    `, { backPanel: 'security' });
+    `);
   }
 
   function renderChangeEmailModal() {
@@ -1082,7 +1100,7 @@
           <span>当前邮箱</span>
           <input name="oldEmail" type="email" value="${escapeHtml(currentEmail)}" readonly />
         </label>
-        <button class="uc-ghost-btn" type="button" data-modal-send-code="changeEmailOld">发送旧邮箱验证码</button>
+        <button class="uc-ghost-btn uc-code-request-btn" type="button" data-modal-send-code="changeEmailOld">发送旧邮箱验证码</button>
         <label class="uc-field">
           <span>旧邮箱验证码</span>
           <input name="oldCode" inputmode="numeric" pattern="\\d{6}" maxlength="6" required autocomplete="one-time-code" placeholder="6 位验证码" />
@@ -1091,14 +1109,13 @@
           <span>新邮箱</span>
           <input name="email" type="email" required autocomplete="email" placeholder="name@example.com" />
         </label>
-        <button class="uc-ghost-btn" type="button" data-modal-send-code="changeEmail">发送新邮箱验证码</button>
+        <button class="uc-ghost-btn uc-code-request-btn" type="button" data-modal-send-code="changeEmail">发送新邮箱验证码</button>
         <label class="uc-field">
           <span>新邮箱验证码</span>
           <input name="code" inputmode="numeric" pattern="\\d{6}" maxlength="6" required autocomplete="one-time-code" placeholder="6 位验证码" />
         </label>
         <div class="uc-form-actions">
           <button class="uc-primary-btn" type="submit">保存新邮箱</button>
-          <button class="uc-ghost-btn" type="button" data-panel="security">返回安全页</button>
         </div>
       </form>
     `, { backPanel: 'security' });
@@ -1112,7 +1129,7 @@
           <span>账号邮箱</span>
           <input name="email" type="email" required autocomplete="email" value="${escapeHtml(email)}" />
         </label>
-        <button class="uc-ghost-btn" type="button" data-modal-send-code="reset">发送验证码</button>
+        <button class="uc-ghost-btn uc-code-request-btn" type="button" data-modal-send-code="reset">发送验证码</button>
         <label class="uc-field">
           <span>邮箱验证码</span>
           <input name="code" inputmode="numeric" pattern="\\d{6}" maxlength="6" required autocomplete="one-time-code" placeholder="6 位验证码" />
@@ -1123,10 +1140,9 @@
         </label>
         <div class="uc-form-actions">
           <button class="uc-primary-btn" type="submit">重置密码</button>
-          <button class="uc-ghost-btn" type="button" data-panel="security">返回安全页</button>
         </div>
       </form>
-    `);
+    `, { backPanel: 'security' });
   }
 
   function renderDeleteAccountModal() {
@@ -1137,7 +1153,6 @@
         <div class="uc-delete-countdown" data-delete-countdown>请等待 10 秒后再确认注销</div>
         <div class="uc-form-actions">
           <button class="uc-danger-btn" type="button" data-delete-account-confirm disabled>确认注销</button>
-          <button class="uc-ghost-btn" type="button" data-panel="security">返回安全页</button>
         </div>
       </div>
     `, { backPanel: 'security' });
@@ -1158,29 +1173,57 @@
   }
 
   function renderNoticeModal() {
-    const notifications = state.currentUser.notifications || {};
-    openModal('通知设置', `
-      <form id="noticeForm" class="uc-form">
-        <div class="uc-switch-list">
-          <label class="uc-switch-row">
-            <span><strong>邮件回复提醒</strong><small>有人回复评论时发送邮件</small></span>
-            <input name="emailReplies" type="checkbox" ${notifications.emailReplies ? 'checked' : ''} />
-          </label>
-          <label class="uc-switch-row">
-            <span><strong>系统通知</strong><small>账号状态或站点消息提醒</small></span>
-            <input name="emailSystem" type="checkbox" ${notifications.emailSystem ? 'checked' : ''} />
-          </label>
-          <label class="uc-switch-row">
-            <span><strong>浏览器推送</strong><small>预留给 Web Push 集成</small></span>
-            <input name="browserPush" type="checkbox" ${notifications.browserPush ? 'checked' : ''} />
-          </label>
+    openModal('通知', `
+      <div class="uc-notification-panel">
+        <div class="uc-panel-head">
+          <div>
+            <strong>通知</strong>
+            <small>评论回复和后台发布的通知都会汇总在这里。</small>
+          </div>
+          <button class="uc-ghost-btn" type="button" data-mark-notifications>全部已读</button>
         </div>
-        <div class="uc-form-actions">
-          <button class="uc-primary-btn" type="submit">保存通知设置</button>
-          <button class="uc-ghost-btn" type="button" data-close-modal>取消</button>
+        <div class="uc-notification-summary">
+          <strong>小小通知</strong>
+          <span>这里会保留评论消息，以及管理员在后台特别发布的通知。</span>
         </div>
-      </form>
+        <div id="notificationList" class="uc-notification-list">正在加载通知...</div>
+      </div>
     `);
+    loadNotifications();
+  }
+
+  function renderNotificationItems(items) {
+    if (!items.length) {
+      return '<p class="uc-empty">暂时没有通知。</p>';
+    }
+
+    return items.map((item) => `
+      <article class="uc-notification-item ${item.readAt ? 'is-read' : 'is-unread'}">
+        <span class="uc-notification-type">${escapeHtml(typeLabel(item.type))}</span>
+        <div>
+          <div class="uc-notification-title">
+            <strong>${escapeHtml(item.title || '通知')}</strong>
+            <time>${escapeHtml(formatDateTime(item.createdAt))}</time>
+          </div>
+          <p>${escapeHtml(item.body || '')}</p>
+          ${item.link ? `<a href="${escapeHtml(item.link)}">查看</a>` : ''}
+        </div>
+      </article>
+    `).join('');
+  }
+
+  async function loadNotifications() {
+    const list = root.querySelector('#notificationList');
+    if (!list) return;
+    list.textContent = '正在加载通知...';
+    try {
+      const payload = await api('notifications');
+      state.notifications = payload.notifications || [];
+      state.unread = payload.unread || 0;
+      list.innerHTML = renderNotificationItems(state.notifications);
+    } catch (error) {
+      list.innerHTML = `<p class="uc-empty">${escapeHtml(error.message)}</p>`;
+    }
   }
 
   async function renderAdminModal(panel = state.adminPanel || 'notice') {
@@ -1525,7 +1568,7 @@
         <form class="uc-shop-admin-card is-new" data-shop-item-form="new">
           <div class="uc-shop-admin-section uc-shop-admin-section-icon">
             <strong>封面管理</strong>
-            <span class="uc-shop-admin-image is-empty" aria-hidden="true" data-shop-image-preview="new">+</span>
+            <span class="uc-shop-admin-image is-empty" aria-hidden="true" data-shop-image-preview="new">${iconSvg('plus')}</span>
             <label class="uc-field"><span>商品封面</span><input name="imageUrl" placeholder="https://example.com/cover.jpg 或 /img/cover.jpg" data-shop-image-input="new" /></label>
           </div>
           <div class="uc-shop-admin-section">
@@ -1755,6 +1798,20 @@
       return;
     }
 
+    if (event.target.closest('[data-mark-notifications]')) {
+      try {
+        const payload = await api('markNotifications', { method: 'POST', body: { all: true } });
+        state.notifications = payload.notifications || [];
+        state.unread = payload.unread || 0;
+        const list = root.querySelector('#notificationList');
+        if (list) list.innerHTML = renderNotificationItems(state.notifications);
+        showToast('通知已全部标记为已读。');
+      } catch (error) {
+        showToast(error.message, true);
+      }
+      return;
+    }
+
     if (event.target.closest('#adminRefresh')) {
       await loadAdminUsers();
       return;
@@ -1976,21 +2033,6 @@
         renderSecurityModal();
         showToast('密码已重置。');
       }
-      if (event.target.id === 'noticeForm') {
-        const data = formData(event.target);
-        const body = {
-          notifications: {
-            emailReplies: data.emailReplies === 'on',
-            emailSystem: data.emailSystem === 'on',
-            browserPush: data.browserPush === 'on',
-          },
-        };
-        const payload = await api('updateProfile', { method: 'POST', body });
-        state.currentUser = payload.user;
-        updateShell();
-        closeModal();
-        showToast('通知设置已保存。');
-      }
       if (event.target.id === 'aiConfigForm') {
         const data = formData(event.target);
         const isNew = state.aiEditingNew;
@@ -2087,7 +2129,7 @@
       preview.classList.toggle('is-empty', !value);
       preview.innerHTML = value
         ? `<img src="${escapeHtml(value)}" alt="商品预览图" loading="lazy" />`
-        : key === 'new' ? '+' : '商';
+        : key === 'new' ? iconSvg('plus') : '商';
     }
   }, { signal });
 

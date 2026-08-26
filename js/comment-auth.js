@@ -68,6 +68,7 @@
     notifications: [],
     unread: 0,
     adminPanel: "notice",
+    deleteTimer: null,
     filter: { query: "", role: "all", status: "all" },
     submitEl: null,
     replyContext: null
@@ -80,6 +81,7 @@
   window.__zeoraCommentAuthCleanup = () => {
     controller.abort();
     clearTimeout(state.retryTimer);
+    clearDeleteTimer();
     state.retryTimer = null;
   };
   document.addEventListener("solitude:beforeNavigate", window.__zeoraCommentAuthCleanup, { once: true, signal });
@@ -95,6 +97,24 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  function iconSvg(name) {
+    const icons = {
+      close: '<path d="M6 6l12 12"/><path d="M18 6 6 18"/>',
+      back: '<path d="M15 18l-6-6 6-6"/>',
+      up: '<path d="m18 15-6-6-6 6"/>',
+      down: '<path d="m6 9 6 6 6-6"/>',
+      plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+      delete: '<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 14h10l1-14"/><path d="M9 7V4h6v3"/>',
+      at: '<path d="M16 8.2v4.1a2.2 2.2 0 0 0 4.4 0V12a8.4 8.4 0 1 0-3.1 6.5"/><circle cx="12" cy="12" r="3.8"/>'
+    };
+    return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${icons[name] || icons.close}</svg>`;
+  }
+
+  function clearDeleteTimer() {
+    if (state.deleteTimer) clearInterval(state.deleteTimer);
+    state.deleteTimer = null;
   }
 
   function normalizeBadgeColor(value) {
@@ -258,7 +278,7 @@
       <div style="display:grid;gap:14px;width:min(360px,calc(100vw - 32px));padding:18px;border-radius:16px;background:var(--efu-card-bg,#fff);box-shadow:0 18px 48px rgba(0,0,0,.18);">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
           <strong style="color:var(--efu-fontcolor,#202124);font-size:16px;">${escapeHtml(provider)} 人机验证</strong>
-          <button type="button" data-zca-captcha-close style="width:32px;height:32px;border:0;border-radius:50%;background:var(--efu-secondbg,#f4f6f8);color:var(--efu-fontcolor,#202124);cursor:pointer;">×</button>
+          <button type="button" data-zca-captcha-close aria-label="关闭验证" style="width:32px;height:32px;border:0;border-radius:50%;background:var(--efu-secondbg,#f4f6f8);color:var(--efu-fontcolor,#202124);cursor:pointer;display:grid;place-items:center;">${iconSvg("close")}</button>
         </div>
         <div id="zca-captcha-slot" style="display:grid;place-items:center;min-height:78px;"></div>
       </div>
@@ -552,6 +572,7 @@
   function closeModal() {
     const root = document.getElementById("zeora-comment-auth-modal");
     if (!root) return;
+    clearDeleteTimer();
     root.classList.add("is-hidden");
     root.innerHTML = "";
   }
@@ -658,86 +679,93 @@
         : "登录后会同步昵称、头像和个人主页到评论区。";
     root.innerHTML = `
       <div class="zca-modal-card zca-login-modal" role="dialog" aria-modal="true" aria-labelledby="zcaLoginTitle">
+        ${showLogin ? "" : `<button class="zca-back" type="button" data-zca-auth-mode="login" aria-label="返回">${iconSvg("back")}</button>`}
         <button class="zca-close" type="button" data-zca-close aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg></button>
-        <header class="zca-login-head">
-          <strong>${escapeHtml(siteName)}</strong>
-          <h2 id="zcaLoginTitle">${escapeHtml(title)}</h2>
-          <p>${escapeHtml(lead)}</p>
-        </header>
+        <div class="zca-auth-scroll">
+          <div class="zca-auth-content">
+            <header class="zca-login-head">
+              <strong>${escapeHtml(siteName)}</strong>
+              <h2 id="zcaLoginTitle">${escapeHtml(title)}</h2>
+              <p>${escapeHtml(lead)}</p>
+            </header>
 
-        <form class="zca-login-form ${showLogin ? "" : "is-hidden"}" data-zca-login-form>
-          <label>
-            <span>邮箱、用户名或 UID</span>
-            <input name="identifier" type="text" required autocomplete="username" placeholder="请按邮箱、用户名或 UID 登录" value="${escapeHtml(state.authIdentifier)}" />
-          </label>
-          <label>
-            <span>密码</span>
-            <input name="password" type="password" required autocomplete="current-password" placeholder="请输入密码" />
-          </label>
-          <label class="zca-remember-row">
-            <input name="rememberMe" type="checkbox" ${state.rememberSession ? "checked" : ""} />
-            <span>记住我，下次自动登录</span>
-          </label>
-          <button class="zca-primary-btn" type="submit">登录</button>
-          <p class="zca-auth-links">
-            <button type="button" data-zca-auth-options>其他方式</button>
-          </p>
-        </form>
+            <form class="zca-login-form ${showLogin ? "" : "is-hidden"}" data-zca-login-form>
+              <label>
+                <span>邮箱、用户名或 UID</span>
+                <input name="identifier" type="text" required autocomplete="username" placeholder="请按邮箱、用户名或 UID 登录" value="${escapeHtml(state.authIdentifier)}" />
+              </label>
+              <label>
+                <span>密码</span>
+                <input name="password" type="password" required autocomplete="current-password" placeholder="请输入密码" />
+              </label>
+              <label class="zca-remember-row">
+                <input name="rememberMe" type="checkbox" ${state.rememberSession ? "checked" : ""} />
+                <span>记住我，下次自动登录</span>
+              </label>
+              <button class="zca-primary-btn" type="submit">登录</button>
+              <p class="zca-auth-links">
+                <button type="button" data-zca-auth-mode="register">注册新账号</button>
+                <button type="button" data-zca-auth-mode="reset">忘记密码</button>
+                <button type="button" data-zca-auth-options>其他方式</button>
+              </p>
+            </form>
 
-        <form class="zca-login-form ${showEmail ? "" : "is-hidden"}" data-zca-login-email-form>
-          <label>
-            <span>邮箱</span>
-            <input name="email" type="email" required autocomplete="email" placeholder="name@example.com" value="${escapeHtml(state.authEmail)}" />
-          </label>
-          <div class="zca-form-actions">
-            <button class="zca-primary-btn" type="submit">发送验证码</button>
-            <button class="zca-quiet-btn" type="button" data-zca-auth-mode="login">返回登录</button>
+            <form class="zca-login-form ${showEmail ? "" : "is-hidden"}" data-zca-login-email-form>
+              <label>
+                <span>邮箱</span>
+                <input name="email" type="email" required autocomplete="email" placeholder="name@example.com" value="${escapeHtml(state.authEmail)}" />
+              </label>
+              <div class="zca-form-actions">
+                <button class="zca-primary-btn" type="submit">发送验证码</button>
+                <button class="zca-quiet-btn" type="button" data-zca-auth-mode="login">返回登录</button>
+              </div>
+            </form>
+
+            <form class="zca-login-form ${showRegister ? "" : "is-hidden"}" data-zca-register-form>
+              <label>
+                <span>邮箱验证码</span>
+                <input name="code" inputmode="numeric" pattern="\\d{6}" maxlength="6" required autocomplete="one-time-code" placeholder="6 位验证码" />
+              </label>
+              <label>
+                <span>用户名</span>
+                <input name="username" required minlength="3" maxlength="32" autocomplete="username" value="${escapeHtml(makeNameFromEmail(state.authEmail))}" />
+              </label>
+              <label>
+                <span>显示名称</span>
+                <input name="displayName" maxlength="64" autocomplete="name" value="${escapeHtml(makeNameFromEmail(state.authEmail))}" />
+              </label>
+              <label>
+                <span>头像外链</span>
+                <input name="avatarUrl" type="url" autocomplete="url" placeholder="https://example.com/avatar.png" />
+              </label>
+              <label>
+                <span>密码</span>
+                <input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="至少 8 位" />
+              </label>
+              <div class="zca-form-actions">
+                <button class="zca-primary-btn" type="submit">注册并登录</button>
+                <button class="zca-quiet-btn" type="button" data-zca-auth-mode="login">返回登录</button>
+              </div>
+            </form>
+
+            <form class="zca-login-form ${showReset ? "" : "is-hidden"}" data-zca-reset-form>
+              <label>
+                <span>邮箱验证码</span>
+                <input name="code" inputmode="numeric" pattern="\\d{6}" maxlength="6" required autocomplete="one-time-code" placeholder="6 位验证码" />
+              </label>
+              <label>
+                <span>新密码</span>
+                <input name="newPassword" type="password" required minlength="8" autocomplete="new-password" placeholder="至少 8 位" />
+              </label>
+              <div class="zca-form-actions">
+                <button class="zca-primary-btn" type="submit">重置并登录</button>
+                <button class="zca-quiet-btn" type="button" data-zca-auth-mode="login">返回登录</button>
+              </div>
+            </form>
+
+            ${message ? `<p class="zca-message ${message.startsWith("错误：") ? "is-error" : ""}">${escapeHtml(message.replace(/^错误：/, ""))}</p>` : ""}
           </div>
-        </form>
-
-        <form class="zca-login-form ${showRegister ? "" : "is-hidden"}" data-zca-register-form>
-          <label>
-            <span>邮箱验证码</span>
-            <input name="code" inputmode="numeric" pattern="\\d{6}" maxlength="6" required autocomplete="one-time-code" placeholder="6 位验证码" />
-          </label>
-          <label>
-            <span>用户名</span>
-            <input name="username" required minlength="3" maxlength="32" autocomplete="username" value="${escapeHtml(makeNameFromEmail(state.authEmail))}" />
-          </label>
-          <label>
-            <span>显示名称</span>
-            <input name="displayName" maxlength="64" autocomplete="name" value="${escapeHtml(makeNameFromEmail(state.authEmail))}" />
-          </label>
-          <label>
-            <span>头像外链</span>
-            <input name="avatarUrl" type="url" autocomplete="url" placeholder="https://example.com/avatar.png" />
-          </label>
-          <label>
-            <span>密码</span>
-            <input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="至少 8 位" />
-          </label>
-          <div class="zca-form-actions">
-            <button class="zca-primary-btn" type="submit">注册并登录</button>
-            <button class="zca-quiet-btn" type="button" data-zca-auth-mode="login">返回登录</button>
-          </div>
-        </form>
-
-        <form class="zca-login-form ${showReset ? "" : "is-hidden"}" data-zca-reset-form>
-          <label>
-            <span>邮箱验证码</span>
-            <input name="code" inputmode="numeric" pattern="\\d{6}" maxlength="6" required autocomplete="one-time-code" placeholder="6 位验证码" />
-          </label>
-          <label>
-            <span>新密码</span>
-            <input name="newPassword" type="password" required minlength="8" autocomplete="new-password" placeholder="至少 8 位" />
-          </label>
-          <div class="zca-form-actions">
-            <button class="zca-primary-btn" type="submit">重置并登录</button>
-            <button class="zca-quiet-btn" type="button" data-zca-auth-mode="login">返回登录</button>
-          </div>
-        </form>
-
-        ${message ? `<p class="zca-message ${message.startsWith("错误：") ? "is-error" : ""}">${escapeHtml(message.replace(/^错误：/, ""))}</p>` : ""}
+        </div>
       </div>
     `;
     root.classList.remove("is-hidden");
@@ -794,6 +822,25 @@
     return Object.fromEntries(new FormData(form).entries());
   }
 
+  async function requestVerificationCode(form, purpose, submitter) {
+    const isOldEmail = purpose === "changeEmailOld";
+    const email = isOldEmail
+      ? String(state.user?.email || form?.elements.oldEmail?.value || "").trim().toLowerCase()
+      : String(form?.elements.email?.value || "").trim().toLowerCase();
+    if (!email) throw new Error("请先填写邮箱。");
+
+    submitter.disabled = true;
+    try {
+      const captcha = await runCaptchaChallenge();
+      await api("requestCode", { method: "POST", body: { email, purpose, captcha } });
+      notify("验证码已发送，请检查邮箱。");
+      const target = purpose === "changeEmailOld" ? form?.elements.oldCode : form?.elements.code;
+      target?.focus?.();
+    } finally {
+      submitter.disabled = false;
+    }
+  }
+
   function formatDate(value) {
     if (!value) return "未知";
     const date = new Date(value);
@@ -846,9 +893,9 @@
             <strong data-zca-social-name="${index}">${escapeHtml(label)}</strong>
           </span>
           <div class="zca-social-tools">
-            <button type="button" data-zca-social-move="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""} aria-label="上移">↑</button>
-            <button type="button" data-zca-social-move="${index}" data-direction="1" ${index === total - 1 ? "disabled" : ""} aria-label="下移">↓</button>
-            <button type="button" data-zca-social-delete="${index}" aria-label="删除">⌫</button>
+            <button type="button" data-zca-social-move="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""} aria-label="上移">${iconSvg("up")}</button>
+            <button type="button" data-zca-social-move="${index}" data-direction="1" ${index === total - 1 ? "disabled" : ""} aria-label="下移">${iconSvg("down")}</button>
+            <button type="button" data-zca-social-delete="${index}" aria-label="删除">${iconSvg("delete")}</button>
           </div>
         </div>
         <input class="zca-social-url" data-zca-social-url="${index}" value="${escapeHtml(item.url || "")}" placeholder="${escapeHtml(preset.url || "https://example.com")}" />
@@ -961,7 +1008,7 @@
   function pointsMeta(user, meta = levelMeta(user)) {
     const earned = Number.isFinite(Number(user?.commentPointsEarned))
       ? Math.max(0, Math.floor(Number(user.commentPointsEarned)))
-      : Math.floor(meta.level / 10);
+      : Math.max(0, Math.floor(Number(meta.level) || 1) - 1);
     const spent = Math.max(0, Math.floor(Number(user?.shopSpentPoints) || 0));
     const available = Number.isFinite(Number(user?.commentPoints))
       ? Math.max(0, Math.floor(Number(user.commentPoints)))
@@ -1035,7 +1082,7 @@
         <div class="zca-shop-balance">
           <span>可用积分</span>
           <strong>${escapeHtml(points.available)}</strong>
-          <small>评论等级每升 10 级获得 1 积分。</small>
+          <small>评论等级每升 1 级获得 1 积分。</small>
         </div>
         <div class="zca-shop-grid">
           ${items.map((item) => `
@@ -1123,6 +1170,35 @@
     window.dispatchEvent(new CustomEvent("zeora-comment-auth:user", { detail: { user: state.user } }));
   }
 
+  function accountPanelInfo(panel, isAdmin) {
+    const requested = String(panel || "profile");
+    if (requested.startsWith("redeemPhone:")) {
+      const key = requested.slice("redeemPhone:".length);
+      return { bodyPanel: requested, activePanel: "shop", backPanel: `redeemConfirm:${key}` };
+    }
+    if (requested.startsWith("redeemConfirm:")) {
+      return { bodyPanel: requested, activePanel: "shop", backPanel: "shop" };
+    }
+
+    const childBack = {
+      profileSocial: "profile",
+      password: "security",
+      changeEmail: "security",
+      forgotPassword: "security",
+      deleteAccount: "security"
+    };
+    if (childBack[requested]) {
+      return { bodyPanel: requested, activePanel: requested === "profileSocial" ? "profile" : "security", backPanel: childBack[requested] };
+    }
+    if (["profile", "level", "shop", "notice", "security"].includes(requested)) {
+      return { bodyPanel: requested, activePanel: requested, backPanel: "" };
+    }
+    if (requested === "admin" && isAdmin) {
+      return { bodyPanel: "admin", activePanel: "admin", backPanel: "" };
+    }
+    return { bodyPanel: "profile", activePanel: "profile", backPanel: "" };
+  }
+
   function renderUserCenterModal(panel = "profile", message = "", isError = false) {
     if (!state.user) {
       state.authMode = "login";
@@ -1135,15 +1211,15 @@
     const user = state.user;
     const badge = user.badgeLabel || (user.role === "admin" ? "博主" : "");
     const accountLevel = levelMeta(user);
+    const isAdmin = user.role === "admin";
     const tabs = user.role === "admin"
-      ? [["profile", "资料"], ["shop", "商城"], ["admin", "管理"]]
-      : [["profile", "资料"], ["shop", "商城"]];
-    const tabNames = tabs.map(([name]) => name);
-    const activePanel = panel.startsWith("profile") ? "profile" : tabNames.includes(panel) ? panel : "profile";
-    const bodyPanel = panel === "profileSocial" ? "profileSocial" : activePanel;
+      ? [["profile", "资料"], ["level", "经验"], ["shop", "商城"], ["notice", "通知"], ["security", "安全"], ["admin", "管理"]]
+      : [["profile", "资料"], ["level", "经验"], ["shop", "商城"], ["notice", "通知"], ["security", "安全"]];
+    const panelInfo = accountPanelInfo(panel, isAdmin);
     root.innerHTML = `
       <div class="zca-modal-card zca-account-modal" role="dialog" aria-modal="true" aria-labelledby="zcaAccountTitle">
-        <button class="zca-close" type="button" data-zca-close aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg></button>
+        ${panelInfo.backPanel ? `<button class="zca-back zca-account-back" type="button" data-zca-account-back="${escapeHtml(panelInfo.backPanel)}" aria-label="返回">${iconSvg("back")}</button>` : ""}
+        <button class="zca-close" type="button" data-zca-close aria-label="关闭">${iconSvg("close")}</button>
         <header class="zca-account-head">
           <div class="zca-account-avatar-row">
             ${avatarHtml(user)}
@@ -1162,24 +1238,76 @@
           </div>
         </header>
         <nav class="zca-account-tabs" aria-label="用户中心">
-          ${tabs.map(([name, label]) => `<button type="button" data-zca-center-panel="${name}" class="${name === activePanel ? "is-active" : ""}">${label}</button>`).join("")}
+          ${tabs.map(([name, label]) => `<button type="button" data-zca-center-panel="${name}" class="${name === panelInfo.activePanel ? "is-active" : ""}">${label}</button>`).join("")}
         </nav>
         <section class="zca-account-body" data-zca-account-body></section>
         ${message ? `<p class="zca-message ${isError ? "is-error" : ""}">${escapeHtml(message)}</p>` : ""}
       </div>
     `;
     root.classList.remove("is-hidden");
-    renderAccountPanel(bodyPanel);
+    renderAccountPanel(panelInfo.bodyPanel);
   }
 
   function renderAccountPanel(panel) {
     const body = document.querySelector("[data-zca-account-body]");
     const user = state.user;
     if (!body || !user) return;
+    clearDeleteTimer();
+
+    if (panel.startsWith("redeemConfirm:")) {
+      renderRedeemConfirm(panel.slice("redeemConfirm:".length));
+      return;
+    }
+
+    if (panel.startsWith("redeemPhone:")) {
+      renderRedeemPhone(panel.slice("redeemPhone:".length));
+      return;
+    }
+
+    if (panel === "security") {
+      body.innerHTML = `
+        <div class="zca-security-panel">
+          <div class="zca-panel-head">
+            <div>
+              <strong>账号安全</strong>
+              <small>当前邮箱：${escapeHtml(user.email || "")}</small>
+            </div>
+          </div>
+          <div class="zca-security-grid">
+            <button class="zca-security-card" type="button" data-zca-center-panel="changeEmail">
+              <strong>修改邮箱</strong>
+              <small>旧邮箱与新邮箱双验证码确认</small>
+            </button>
+            <button class="zca-security-card" type="button" data-zca-center-panel="forgotPassword">
+              <strong>忘记密码</strong>
+              <small>通过邮箱验证码重置密码</small>
+            </button>
+            <button class="zca-security-card" type="button" data-zca-center-panel="password">
+              <strong>修改密码</strong>
+              <small>输入当前密码后保存新密码</small>
+            </button>
+            <button class="zca-security-card is-danger" type="button" data-zca-center-panel="deleteAccount">
+              <strong>注销账号</strong>
+              <small>10 秒倒计时后才可确认</small>
+            </button>
+          </div>
+          <div class="zca-form-actions">
+            <button class="zca-quiet-btn" type="button" data-zca-logout>退出当前账号</button>
+          </div>
+        </div>
+      `;
+      return;
+    }
 
     if (panel === "password") {
       body.innerHTML = `
         <form class="zca-account-form" data-zca-password-form>
+          <div class="zca-panel-head zca-full-row">
+            <div>
+              <strong>修改密码</strong>
+              <small>修改成功后会同步刷新当前登录状态</small>
+            </div>
+          </div>
           <label><span>当前密码</span><input name="currentPassword" type="password" required autocomplete="current-password" /></label>
           <label><span>新密码</span><input name="newPassword" type="password" required minlength="8" autocomplete="new-password" placeholder="至少 8 位" /></label>
           <button class="zca-primary-btn" type="submit">保存新密码</button>
@@ -1190,13 +1318,17 @@
 
     if (panel === "notice") {
       body.innerHTML = `
-        <div class="zca-notification-panel">
+        <div class="zca-notification-panel zca-notification-page">
           <div class="zca-panel-head">
             <div>
               <strong>通知</strong>
-              <small>评论回复、友链和站点消息会在这里出现</small>
+              <small>评论回复和后台发布的通知都会汇总在这里</small>
             </div>
             <button class="zca-quiet-btn" type="button" data-zca-mark-notifications>全部已读</button>
+          </div>
+          <div class="zca-notification-summary">
+            <strong>小小通知</strong>
+            <span>这里会保留评论消息，以及管理员在后台特别发布的通知。</span>
           </div>
           <div class="zca-notification-list" data-zca-notification-list>正在加载通知...</div>
         </div>
@@ -1205,21 +1337,91 @@
       return;
     }
 
+    if (panel === "changeEmail") {
+      body.innerHTML = `
+        <form class="zca-account-form zca-change-email-form" data-zca-change-email-form>
+          <div class="zca-panel-head zca-full-row">
+            <div>
+              <strong>修改邮箱</strong>
+              <small>先验证旧邮箱，再验证要绑定的新邮箱</small>
+            </div>
+          </div>
+          <label><span>当前邮箱</span><input name="oldEmail" type="email" value="${escapeHtml(user.email || "")}" readonly /></label>
+          <button class="zca-quiet-btn zca-code-request-btn" type="button" data-zca-send-code="changeEmailOld">发送旧邮箱验证码</button>
+          <label><span>旧邮箱验证码</span><input name="oldCode" inputmode="numeric" pattern="\\d{6}" maxlength="6" required autocomplete="one-time-code" placeholder="6 位验证码" /></label>
+          <label><span>新邮箱</span><input name="email" type="email" required autocomplete="email" placeholder="name@example.com" /></label>
+          <button class="zca-quiet-btn zca-code-request-btn" type="button" data-zca-send-code="changeEmail">发送新邮箱验证码</button>
+          <label><span>新邮箱验证码</span><input name="code" inputmode="numeric" pattern="\\d{6}" maxlength="6" required autocomplete="one-time-code" placeholder="6 位验证码" /></label>
+          <button class="zca-primary-btn" type="submit">保存新邮箱</button>
+        </form>
+      `;
+      return;
+    }
+
+    if (panel === "forgotPassword") {
+      body.innerHTML = `
+        <form class="zca-account-form zca-reset-password-form" data-zca-reset-password-form>
+          <div class="zca-panel-head zca-full-row">
+            <div>
+              <strong>忘记密码</strong>
+              <small>通过邮箱验证码直接设置新密码</small>
+            </div>
+          </div>
+          <label><span>账号邮箱</span><input name="email" type="email" required autocomplete="email" value="${escapeHtml(user.email || "")}" /></label>
+          <button class="zca-quiet-btn zca-code-request-btn" type="button" data-zca-send-code="reset">发送验证码</button>
+          <label><span>邮箱验证码</span><input name="code" inputmode="numeric" pattern="\\d{6}" maxlength="6" required autocomplete="one-time-code" placeholder="6 位验证码" /></label>
+          <label><span>新密码</span><input name="newPassword" type="password" required minlength="8" autocomplete="new-password" placeholder="至少 8 位" /></label>
+          <button class="zca-primary-btn" type="submit">重置密码</button>
+        </form>
+      `;
+      return;
+    }
+
+    if (panel === "deleteAccount") {
+      body.innerHTML = `
+        <div class="zca-delete-panel">
+          <div class="zca-panel-head">
+            <div>
+              <strong>注销账号</strong>
+              <small>注销后评论账号、积分和兑换资格都会失效</small>
+            </div>
+          </div>
+          <p>为防止误触，需要等待 10 秒后才能确认注销。确认后当前会话会退出。</p>
+          <button class="zca-primary-btn zca-danger-btn" type="button" data-zca-delete-account-confirm disabled>请等待 10 秒</button>
+        </div>
+      `;
+      const button = body.querySelector("[data-zca-delete-account-confirm]");
+      let remaining = 10;
+      const tick = () => {
+        if (!button) return;
+        button.disabled = remaining > 0;
+        button.textContent = remaining > 0 ? `请等待 ${remaining} 秒` : "确认注销账号";
+        remaining -= 1;
+        if (remaining < 0) clearDeleteTimer();
+      };
+      tick();
+      state.deleteTimer = setInterval(tick, 1000);
+      return;
+    }
+
     if (panel === "profileSocial") {
       body.innerHTML = `
         <form class="zca-account-form zca-social-panel" data-zca-social-form>
           <div class="zca-panel-head">
             <div>
-              <strong>个人资料</strong>
-              <small>编辑社交链接，最多 ${SOCIAL_LIMIT} 条</small>
+              <strong>社交资料</strong>
+              <small>编辑社交资料，最多 ${SOCIAL_LIMIT} 条</small>
             </div>
-            <button class="zca-quiet-btn" type="button" data-zca-center-panel="profile">返回</button>
           </div>
           <div class="zca-social-editor" data-zca-social-editor>
+            <div class="zca-social-section-head">
+              <strong>已有的社交资料</strong>
+              <small>可调整顺序，也可以继续新增。</small>
+            </div>
             <div class="zca-social-list-editor" data-zca-social-list></div>
             <div class="zca-social-footer">
               <div class="zca-social-add">
-                <button class="zca-quiet-btn zca-social-add-pill" type="button" data-zca-social-add-toggle><span>+</span> 新增</button>
+                <button class="zca-quiet-btn zca-social-add-pill" type="button" data-zca-social-add-toggle><span>${iconSvg("plus")}</span> 新增</button>
                 <div class="zca-social-menu">
                   ${SOCIAL_PRESETS.map((item) => `<button type="button" data-zca-social-add="${escapeHtml(item.label)}">${escapeHtml(item.label)}</button>`).join("")}
                 </div>
@@ -1252,7 +1454,7 @@
           <label class="zca-full-row"><span>个人简介</span><input name="bio" maxlength="120" value="${escapeHtml(user.bio || "")}" placeholder="一句话介绍自己" /></label>
           <button class="zca-quiet-btn zca-full-row" type="button" data-zca-center-panel="profileSocial">编辑社交链接</button>
           <div class="zca-profile-footer zca-full-row">
-            <button class="zca-quiet-btn" type="button" data-zca-center-panel="password">更改密码</button>
+            <button class="zca-quiet-btn" type="button" data-zca-center-panel="security">账号安全</button>
             <button class="zca-primary-btn" type="submit">保存资料</button>
             <button class="zca-quiet-btn" type="button" data-zca-logout>退出登录</button>
           </div>
@@ -1528,7 +1730,7 @@
         <form class="zca-shop-admin-card is-new" data-zca-shop-item-form="new">
           <div class="zca-shop-admin-section zca-shop-admin-section-icon">
             <strong>封面管理</strong>
-            <span class="zca-shop-admin-image is-empty" aria-hidden="true" data-zca-shop-image-preview="new">+</span>
+            <span class="zca-shop-admin-image is-empty" aria-hidden="true" data-zca-shop-image-preview="new">${iconSvg("plus")}</span>
             <label><span>商品封面</span><input name="imageUrl" placeholder="https://example.com/cover.jpg 或 /img/cover.jpg" data-zca-shop-image-input="new" /></label>
           </div>
           <div class="zca-shop-admin-section">
@@ -2386,7 +2588,7 @@
       button.type = "button";
       button.className = "tk-submit-action-icon zca-at-action solitude-mention-action";
       button.setAttribute("aria-label", "插入 @");
-      button.innerHTML = `<span aria-hidden="true"><i class="solitude fas fa-at"></i></span>`;
+      button.innerHTML = `<span aria-hidden="true">${iconSvg("at")}</span>`;
       button.addEventListener("click", () => {
         const submit = button.closest(".tk-submit");
         insertMentionShortcut(submit?.querySelector(".el-textarea__inner"));
@@ -2540,6 +2742,23 @@
         renderUserCenterModal("profile");
         return;
       }
+      const accountBack = event.target.closest("[data-zca-account-back]");
+      if (accountBack) {
+        renderUserCenterModal(accountBack.dataset.zcaAccountBack || "profile");
+        return;
+      }
+      const sendCodeButton = event.target.closest("[data-zca-send-code]");
+      if (sendCodeButton) {
+        const form = sendCodeButton.closest("form");
+        (async () => {
+          try {
+            await requestVerificationCode(form, sendCodeButton.dataset.zcaSendCode, sendCodeButton);
+          } catch (error) {
+            notify(error.message, true);
+          }
+        })();
+        return;
+      }
       const panelButton = event.target.closest("[data-zca-center-panel]");
       if (panelButton) {
         renderUserCenterModal(panelButton.dataset.zcaCenterPanel || "profile");
@@ -2568,17 +2787,16 @@
       }
       const redeemStart = event.target.closest("[data-zca-redeem-start]");
       if (redeemStart) {
-        renderRedeemConfirm(redeemStart.dataset.zcaRedeemStart);
+        renderUserCenterModal(`redeemConfirm:${redeemStart.dataset.zcaRedeemStart}`);
         return;
       }
       const redeemPhone = event.target.closest("[data-zca-redeem-phone]");
       if (redeemPhone) {
-        renderRedeemPhone(redeemPhone.dataset.zcaRedeemPhone);
+        renderUserCenterModal(`redeemPhone:${redeemPhone.dataset.zcaRedeemPhone}`);
         return;
       }
       if (event.target.closest("[data-zca-shop-back]")) {
-        const body = document.querySelector("[data-zca-account-body]");
-        if (body) body.innerHTML = renderShopPanel(state.user);
+        renderUserCenterModal("shop");
         return;
       }
       if (event.target.closest("[data-zca-admin-refresh]")) {
@@ -2755,6 +2973,20 @@
         })();
         return;
       }
+      const deleteAccountConfirm = event.target.closest("[data-zca-delete-account-confirm]");
+      if (deleteAccountConfirm) {
+        deleteAccountConfirm.disabled = true;
+        (async () => {
+          try {
+            await api("deleteAccount", { method: "POST", body: { confirm: "DELETE" } });
+            resetToGate("账号已注销。");
+          } catch (error) {
+            deleteAccountConfirm.disabled = false;
+            notify(error.message, true);
+          }
+        })();
+        return;
+      }
       if (event.target.closest("[data-zca-manual]")) {
         renderManualWarningModal();
         return;
@@ -2792,14 +3024,15 @@
       const profileForm = event.target.closest("[data-zca-profile-form]");
       const socialForm = event.target.closest("[data-zca-social-form]");
       const passwordForm = event.target.closest("[data-zca-password-form]");
-      const noticeForm = event.target.closest("[data-zca-notice-form]");
+      const changeEmailForm = event.target.closest("[data-zca-change-email-form]");
+      const resetPasswordForm = event.target.closest("[data-zca-reset-password-form]");
       const adminNotificationForm = event.target.closest("[data-zca-admin-notification-form]");
       const redeemForm = event.target.closest("[data-zca-redeem-form]");
       const shopItemForm = event.target.closest("[data-zca-shop-item-form]");
       const aiConfigForm = event.target.closest("[data-zca-ai-config-form]");
       const emailForm = event.target.closest("[data-zca-email-form]");
       const codeForm = event.target.closest("[data-zca-code-form]");
-      if (!emailForm && !codeForm && !loginForm && !loginEmailForm && !registerForm && !resetForm && !profileForm && !socialForm && !passwordForm && !noticeForm && !adminNotificationForm && !redeemForm && !shopItemForm && !aiConfigForm) return;
+      if (!emailForm && !codeForm && !loginForm && !loginEmailForm && !registerForm && !resetForm && !profileForm && !socialForm && !passwordForm && !changeEmailForm && !resetPasswordForm && !adminNotificationForm && !redeemForm && !shopItemForm && !aiConfigForm) return;
 
       event.preventDefault();
       const submitter = event.submitter || event.target.querySelector("button[type='submit']");
@@ -2923,32 +3156,41 @@
           try {
             const payload = await api("changePassword", { method: "POST", body: formData(passwordForm) });
             updateAuthorizedUser(payload.user);
-            renderUserCenterModal("password", "密码已更新。");
+            renderUserCenterModal("security", "密码已更新。");
           } catch (error) {
             renderUserCenterModal("password", error.message, true);
           }
         })();
       }
 
-      if (noticeForm) {
+      if (changeEmailForm) {
         submitter.disabled = true;
         (async () => {
           try {
-            const data = formData(noticeForm);
-            const payload = await api("updateProfile", {
+            const data = formData(changeEmailForm);
+            const payload = await api("changeEmail", {
               method: "POST",
-              body: {
-                notifications: {
-                  emailReplies: data.emailReplies === "on",
-                  emailSystem: data.emailSystem === "on",
-                  browserPush: data.browserPush === "on"
-                }
-              }
+              body: { email: data.email, oldCode: data.oldCode, code: data.code }
             });
+            state.token = payload.sessionToken || state.token;
             updateAuthorizedUser(payload.user);
-            renderUserCenterModal("notice", "通知设置已保存。");
+            renderUserCenterModal("security", "邮箱已更新。");
           } catch (error) {
-            renderUserCenterModal("notice", error.message, true);
+            renderUserCenterModal("changeEmail", error.message, true);
+          }
+        })();
+      }
+
+      if (resetPasswordForm) {
+        submitter.disabled = true;
+        (async () => {
+          try {
+            const payload = await api("resetPassword", { method: "POST", body: formData(resetPasswordForm) });
+            state.token = payload.sessionToken || state.token;
+            updateAuthorizedUser(payload.user);
+            renderUserCenterModal("security", "密码已重置。");
+          } catch (error) {
+            renderUserCenterModal("forgotPassword", error.message, true);
           }
         })();
       }
@@ -3079,7 +3321,7 @@
         preview.classList.toggle("is-empty", !value);
         preview.innerHTML = value
           ? `<img src="${escapeHtml(value)}" alt="商品预览图" loading="lazy" />`
-          : key === "new" ? "+" : "商";
+          : key === "new" ? iconSvg("plus") : "商";
       }
     }, { signal });
 
